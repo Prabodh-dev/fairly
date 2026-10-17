@@ -1,0 +1,12 @@
+{
+  "routes": {
+    "api-default": { "algorithm": "sliding-window-counter", "limit": 100, "windowSeconds": 60 },
+    "login": { "algorithm": "sliding-window-log", "limit": 5, "windowSeconds": 300 },
+    "uploads": { "algorithm": "token-bucket", "limit": 20, "windowSeconds": 60 },
+    "search": { "algorithm": "fixed-window", "limit": 30, "windowSeconds": 10 },
+    "demo-fixed-window": { "algorithm": "fixed-window", "limit": 1000, "windowSeconds": 86400 },
+    "demo-sliding-window-log": { "algorithm": "sliding-window-log", "limit": 1000, "windowSeconds": 86400 },
+    "demo-sliding-window-counter": { "algorithm": "sliding-window-counter", "limit": 1000, "windowSeconds": 86400 },
+    "demo-token-bucket": { "algorithm": "token-bucket", "limit": 1000, "windowSeconds": 86400 }
+  }
+}
