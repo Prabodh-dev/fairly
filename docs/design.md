@@ -48,7 +48,8 @@ HTTP: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` (epoch s
 
 ## API
 
-- `POST /v1/check` with `{ "key": "<api key or user id>", "route": "<configured route>" }`. 200 when allowed, 429 when rejected, 400 for a malformed body, 404 for an unknown route.
+- `POST /v1/check` with `{ "key": "<api key or user id>", "route": "<configured route>" }`, or with an inline limit: `{ "key": "...", "algorithm": "token-bucket", "limit": 100, "windowSeconds": 60 }`. Inline limits are validated by the same schema as the config file. State for inline checks is kept under the `inline` route name. 200 when allowed, 429 when rejected, 400 for a malformed body, 404 for an unknown route.
+- `GET /metrics` exposes Prometheus metrics: `fairly_decisions_total{route,algorithm,decision}`, `fairly_store_errors_total{algorithm,policy}` and `fairly_check_duration_seconds{algorithm}`. The key is never a label.
 - `GET /healthz` returns 200 if Redis answers PING, 503 otherwise.
 
 ## Store failure policy
