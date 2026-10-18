@@ -5,6 +5,8 @@ import pino from 'pino';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Policy } from '../../src/config/types.js';
 import { uniqueKey } from '../helpers.js';
+import { sampleValue, scrape } from '../metrics.js';
+import { SpecConformance, loadSpec } from '../openapi.js';
 import { postCheck, startServer, type RunningServer } from '../server.js';
 
 const TOKEN = 'test-admin-token-0123456789';
@@ -140,6 +142,28 @@ describe('redis failure handling', () => {
     const entry = openLogs.find((line) => line.msg === 'redis unavailable, applying failure mode' && line.key === key);
     expect(entry).toMatchObject({ policy: 'r', algorithm: 'fixed-window', failureMode: 'fail-open', decision: 'allowed' });
     expect(await metricValue(open, 'fairly_redis_failures_total{operation="check",mode="fail-open"}')).toBe(before + 1);
+  });
+
+  it('serves degraded responses that match the documented schemas and counts degraded decisions', async () => {
+    const conformance = new SpecConformance(loadSpec());
+    const headers = ['x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset', 'x-fairly-degraded'];
+    const send = (server: RunningServer): Promise<Response> =>
+      fetch(`${server.url}/v1/check`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key: uniqueKey('user'), route: 'r' }) });
+
+    const openResponse = await send(open);
+    conformance.responseConforms('post', '/v1/check', 200, await openResponse.json(), openResponse.headers, headers);
+    const closedResponse = await send(closed);
+    expect(closedResponse.status).toBe(503);
+    conformance.responseConforms('post', '/v1/check', 503, await closedResponse.json(), closedResponse.headers, [...headers, 'retry-after']);
+    const health = await fetch(`${closed.url}/healthz`);
+    conformance.responseConforms('get', '/healthz', 503, await health.json(), health.headers);
+
+    const openMetrics = await scrape(open.url);
+    expect(sampleValue(openMetrics, 'fairly_degraded_decisions_total', { mode: 'fail-open', decision: 'allowed' })).toBeGreaterThanOrEqual(2);
+    expect(sampleValue(openMetrics, 'fairly_degraded_decisions_total', { mode: 'fail-open', decision: 'rejected' })).toBeUndefined();
+    const closedMetrics = await scrape(closed.url);
+    expect(sampleValue(closedMetrics, 'fairly_degraded_decisions_total', { mode: 'fail-closed', decision: 'rejected' })).toBeGreaterThanOrEqual(1);
+    expect(sampleValue(closedMetrics, 'fairly_http_requests_total', { method: 'POST', route: '/v1/check', status: '503' })).toBeGreaterThanOrEqual(1);
   });
 
   it('logs and counts every failed check, not only the first', async () => {

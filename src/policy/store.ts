@@ -13,6 +13,7 @@ export interface PolicyStoreOptions {
   refreshMs: number;
   keyPrefix?: string;
   onFailure?: (operation: string) => void;
+  onChange?: (count: number) => void;
 }
 
 function toDefinition(policy: Policy): PolicyDefinition {
@@ -27,6 +28,7 @@ export class PolicyStore {
   private readonly hashKey: string;
   private readonly seededKey: string;
   private readonly onFailure: (operation: string) => void;
+  private readonly onChange: (count: number) => void;
   private policies = new Map<string, Policy>();
   private compiled: CompiledPolicy[] = [];
   private timer: NodeJS.Timeout | undefined;
@@ -41,6 +43,7 @@ export class PolicyStore {
     this.hashKey = prefix;
     this.seededKey = `${prefix}:seeded`;
     this.onFailure = options.onFailure ?? ((): void => undefined);
+    this.onChange = options.onChange ?? ((): void => undefined);
     this.setAll(options.seed);
   }
 
@@ -149,5 +152,6 @@ export class PolicyStore {
 
   private recompile(): void {
     this.compiled = compilePolicies(this.policies.values());
+    this.onChange(this.policies.size);
   }
 }

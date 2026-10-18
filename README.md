@@ -88,6 +88,26 @@ Response body: `{ "allowed": true, "remaining": 4, "resetAtMs": 1700000060000, "
 
 `GET /healthz` returns 200 if Redis answers, 503 otherwise. `GET /metrics` serves Prometheus metrics.
 
+### API documentation
+
+The full contract is in [`openapi.yaml`](openapi.yaml) (OpenAPI 3.0.3): every endpoint, request and response schemas, the rate limit headers, and the 400, 401, 404, 409, 429 and 503 responses. A running service serves it as an interactive Swagger UI at `/docs`, and as raw `/docs/json` and `/docs/yaml`. Tests validate the document against the OpenAPI schema, check that it documents exactly the routes the service registers, and check real responses (including degraded ones) against its schemas and headers.
+
+### Metrics
+
+`/metrics` exposes, besides Node process metrics prefixed `fairly_`:
+
+| Metric | Labels | Meaning |
+| --- | --- | --- |
+| `fairly_decisions_total` | `policy`, `algorithm`, `decision` (`allowed` or `rejected`) | Decisions made by Redis |
+| `fairly_degraded_decisions_total` | `mode`, `decision` | Decisions made by the failure mode instead |
+| `fairly_redis_failures_total` | `operation`, `mode` | Failed or timed out Redis operations |
+| `fairly_check_duration_seconds` | `algorithm` | Histogram of the store round trip per check |
+| `fairly_http_requests_total` | `method`, `route`, `status` | Requests by route pattern, not by URL |
+| `fairly_http_request_duration_seconds` | `method`, `route` | Histogram of request duration |
+| `fairly_policies` | none | Policies currently loaded in this instance |
+
+The rate limit key is never used as a label. [`docs/grafana-dashboard.json`](docs/grafana-dashboard.json) is a Grafana dashboard for these series (import it in Grafana and pick the Prometheus data source): decisions by algorithm, policy and outcome, check and HTTP latency percentiles, status codes, Redis failures and degraded decisions, policy count, event loop lag, memory and CPU. The check latency panel is the live counterpart of the latency columns in [`docs/benchmarks.md`](docs/benchmarks.md).
+
 ### Header contract
 
 Every `/v1/check` response that reaches a decision carries these headers, whether the request is allowed, denied, or decided by the failure mode:
@@ -167,6 +187,19 @@ pnpm test
 ```
 
 Tests start a real Redis with Testcontainers, so Docker must be running. They cover each algorithm (limits, remaining count, window and refill behavior with an injected clock, boundary bursts, clock moving backwards), configuration validation, policy resolution and precedence, the admin API including authentication and propagation between instances, the header contract for allowed and denied responses, Redis failure handling (container stopped and container paused, in both failure modes), and concurrency: 500 concurrent HTTP requests against a limit of 100 must allow exactly 100, for every algorithm, against one server and against two servers sharing a Redis.
+
+## Benchmarks
+
+`scripts/benchmark.mjs` runs all four algorithms under identical load (same requests, concurrency, key sequence and Redis) at 1, 16, 64 and 256 concurrent lanes, in-process against Redis and through the HTTP API, and measures throughput, p50/p95/p99 latency, Redis CPU and bytes of Redis memory per tracked key. Full tables, method, caveats and the analysis are in [`docs/benchmarks.md`](docs/benchmarks.md). On a 4 vCPU machine shared by Redis, the service and the load generator:
+
+| Concurrency 64 | Engine req/s | Engine p99 | HTTP req/s | HTTP p99 | Bytes per key at limit 100 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| fixed-window | 87,777 | 1.96 ms | 14,572 | 10.58 ms | 80 |
+| sliding-window-log | 67,700 | 2.19 ms | 14,841 | 9.51 ms | 5,192 |
+| sliding-window-counter | 82,790 | 1.96 ms | 14,896 | 10.84 ms | 80 |
+| token-bucket | 75,716 | 2.22 ms | 15,290 | 9.47 ms | 104 |
+
+Why these numbers matter: all four algorithms enforce the same limit exactly under concurrency, so the choice between them is a choice about cost and behavior, and the numbers say what each costs. The sliding window log is the most precise and the most expensive: about 15 to 25 percent fewer checks per second out of Redis than fixed window, and memory that grows with the limit (5 KB per key at a limit of 100, 1.3 MB at 10,000, against a constant 80 bytes for fixed window). Fixed window and the sliding window counter are the cheapest. Token bucket costs a small constant per key and is the only one that lets a client burst and then refills it at a steady rate (it admitted 55 percent of requests in a test where the others admitted 50). Through HTTP the four are within noise of each other, because the Node process, not Redis, is the limit there; script cost matters once several service instances share one Redis. Treat the absolute figures as one machine's, and the ratios as the finding.
 
 ## Race demo
 

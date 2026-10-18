@@ -1,0 +1,398 @@
+openapi: 3.0.3
+info:
+  title: fairly
+  version: 0.3.0
+  description: |
+    Distributed rate limiter. Each decision is one atomic Redis script.
+
+    `POST /v1/check` decides whether a key may proceed. The policy is resolved from `route` and `tier`
+    (most specific route wins, then a tier match), or an inline limit can be sent instead.
+
+    When Redis cannot answer, the configured failure mode decides: `fail-open` (default) returns 200 and
+    `fail-closed` returns 503. Both mark the response as degraded.
+servers:
+  - url: http://localhost:8080
+tags:
+  - name: check
+    description: Rate limit decisions
+  - name: admin
+    description: Runtime policy management, guarded by the X-Admin-Token header. Only available when FAIRLY_ADMIN_TOKEN is set.
+  - name: operations
+    description: Health and metrics
+paths:
+  /v1/check:
+    post:
+      tags: [check]
+      operationId: check
+      summary: Check and consume one unit of a key's quota
+      description: |
+        Atomically decides and records one request. Every response that reaches a decision carries
+        `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset`, whether it is allowed (200),
+        denied (429), or decided by the failure mode (200 or 503). A denial also carries `Retry-After`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/CheckByPolicyRequest'
+                - $ref: '#/components/schemas/CheckInlineRequest'
+            examples:
+              byPolicy:
+                summary: Resolve the policy from route and tier
+                value: { key: user-42, route: /login, tier: premium }
+              inline:
+                summary: Ad-hoc limit, bypassing policies
+                value: { key: user-42, algorithm: token-bucket, limit: 100, windowSeconds: 60 }
+      responses:
+        '200':
+          description: |
+            Allowed. If `degraded` is true, Redis was unreachable and fail-open let the request through;
+            `remaining` is then the limit and `resetAtMs` is one window from now, not a real count.
+          headers:
+            X-RateLimit-Limit: { $ref: '#/components/headers/X-RateLimit-Limit' }
+            X-RateLimit-Remaining: { $ref: '#/components/headers/X-RateLimit-Remaining' }
+            X-RateLimit-Reset: { $ref: '#/components/headers/X-RateLimit-Reset' }
+            X-Fairly-Degraded: { $ref: '#/components/headers/X-Fairly-Degraded' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckResult' }
+        '400':
+          description: The body is malformed, or the inline limit is invalid.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: No policy matches the route and tier.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NoMatchingPolicy' }
+        '429':
+          description: Denied. The key has used its quota. Retry after the number of seconds in `Retry-After`.
+          headers:
+            X-RateLimit-Limit: { $ref: '#/components/headers/X-RateLimit-Limit' }
+            X-RateLimit-Remaining: { $ref: '#/components/headers/X-RateLimit-Remaining' }
+            X-RateLimit-Reset: { $ref: '#/components/headers/X-RateLimit-Reset' }
+            Retry-After: { $ref: '#/components/headers/Retry-After' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckResult' }
+        '503':
+          description: |
+            Redis could not answer and the failure mode is `fail-closed`. The client is not necessarily over
+            its limit; the service cannot decide.
+          headers:
+            X-RateLimit-Limit: { $ref: '#/components/headers/X-RateLimit-Limit' }
+            X-RateLimit-Remaining: { $ref: '#/components/headers/X-RateLimit-Remaining' }
+            X-RateLimit-Reset: { $ref: '#/components/headers/X-RateLimit-Reset' }
+            Retry-After: { $ref: '#/components/headers/Retry-After' }
+            X-Fairly-Degraded: { $ref: '#/components/headers/X-Fairly-Degraded' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckResult' }
+  /v1/admin/policies:
+    get:
+      tags: [admin]
+      operationId: listPolicies
+      summary: List policies
+      security: [{ AdminToken: [] }]
+      responses:
+        '200':
+          description: All policies, sorted by name.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [policies]
+                properties:
+                  policies:
+                    type: array
+                    items: { $ref: '#/components/schemas/Policy' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [admin]
+      operationId: createPolicy
+      summary: Create a policy
+      security: [{ AdminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PolicyCreate' }
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Policy' }
+        '400': { $ref: '#/components/responses/InvalidPolicy' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: A policy with this name already exists.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, name]
+                properties:
+                  error: { type: string, enum: [policy_exists] }
+                  name: { type: string }
+        '503': { $ref: '#/components/responses/StoreUnavailable' }
+  /v1/admin/policies/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/PolicyName' }
+    get:
+      tags: [admin]
+      operationId: getPolicy
+      summary: Get one policy
+      security: [{ AdminToken: [] }]
+      responses:
+        '200':
+          description: The policy.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Policy' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/PolicyNotFound' }
+    put:
+      tags: [admin]
+      operationId: updatePolicy
+      summary: Replace a policy's definition
+      description: Replaces route, tier, algorithm, limit and window. Existing quota state is kept; changing the algorithm starts fresh state for that algorithm.
+      security: [{ AdminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PolicyDefinition' }
+      responses:
+        '200':
+          description: The updated policy.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Policy' }
+        '400': { $ref: '#/components/responses/InvalidPolicy' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/PolicyNotFound' }
+        '503': { $ref: '#/components/responses/StoreUnavailable' }
+    delete:
+      tags: [admin]
+      operationId: deletePolicy
+      summary: Delete a policy
+      security: [{ AdminToken: [] }]
+      responses:
+        '204': { description: Deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/PolicyNotFound' }
+        '503': { $ref: '#/components/responses/StoreUnavailable' }
+  /healthz:
+    get:
+      tags: [operations]
+      operationId: health
+      summary: Redis connectivity check
+      responses:
+        '200':
+          description: Redis answered PING within the timeout.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [ok] }
+        '503':
+          description: Redis is unreachable or timed out.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [unavailable] }
+  /metrics:
+    get:
+      tags: [operations]
+      operationId: metrics
+      summary: Prometheus metrics
+      description: |
+        Text exposition format. Series: `fairly_decisions_total`, `fairly_degraded_decisions_total`,
+        `fairly_redis_failures_total`, `fairly_check_duration_seconds`, `fairly_http_requests_total`,
+        `fairly_http_request_duration_seconds`, `fairly_policies`, and Node process metrics prefixed `fairly_`.
+      responses:
+        '200':
+          description: Metrics in Prometheus text format.
+          content:
+            text/plain:
+              schema: { type: string }
+components:
+  securitySchemes:
+    AdminToken:
+      type: apiKey
+      in: header
+      name: X-Admin-Token
+      description: Must equal the FAIRLY_ADMIN_TOKEN the service was started with.
+  headers:
+    X-RateLimit-Limit:
+      description: The limit of the policy that applied.
+      schema: { type: integer, minimum: 1 }
+    X-RateLimit-Remaining:
+      description: Requests left, computed by the same atomic operation that made the decision. 0 when denied.
+      schema: { type: integer, minimum: 0 }
+    X-RateLimit-Reset:
+      description: |
+        Unix time in seconds, rounded up. When allowed, the point at which the algorithm's counter next resets
+        or frees capacity. When denied, the earliest time a retry can succeed.
+      schema: { type: integer }
+    Retry-After:
+      description: Whole seconds until a retry can succeed, at least 1.
+      schema: { type: integer, minimum: 1 }
+    X-Fairly-Degraded:
+      description: '`true` when the decision was made by the failure mode because Redis could not answer.'
+      schema: { type: string, enum: ['true'] }
+  responses:
+    Unauthorized:
+      description: The X-Admin-Token header is missing or wrong.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error: { type: string, enum: [unauthorized] }
+    PolicyNotFound:
+      description: No policy with this name.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error, name]
+            properties:
+              error: { type: string, enum: [policy_not_found] }
+              name: { type: string }
+    InvalidPolicy:
+      description: The policy is invalid. `details` lists each problem.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error, details]
+            properties:
+              error: { type: string, enum: [invalid_policy] }
+              details:
+                type: array
+                items: { type: string }
+    StoreUnavailable:
+      description: Redis could not be reached. The change was not applied.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error: { type: string, enum: [store_unavailable] }
+  schemas:
+    Algorithm:
+      type: string
+      enum: [fixed-window, sliding-window-log, sliding-window-counter, token-bucket]
+    PolicyName:
+      type: string
+      maxLength: 64
+      pattern: '^[A-Za-z0-9_.-]+$'
+    Limit:
+      type: integer
+      minimum: 1
+    CheckByPolicyRequest:
+      type: object
+      additionalProperties: false
+      required: [key, route]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 256, description: 'API key, user id or any other identifier being limited.' }
+        route:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: Route to match against policy route patterns.
+        tier:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Optional tier. Policies that name a tier apply only when it matches.
+    CheckInlineRequest:
+      type: object
+      additionalProperties: false
+      required: [key, algorithm, limit, windowSeconds]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 256 }
+        algorithm: { $ref: '#/components/schemas/Algorithm' }
+        limit: { $ref: '#/components/schemas/Limit' }
+        windowSeconds: { $ref: '#/components/schemas/Limit' }
+    CheckResult:
+      type: object
+      required: [allowed, remaining, resetAtMs, policy]
+      properties:
+        allowed: { type: boolean }
+        remaining: { type: integer, minimum: 0 }
+        resetAtMs:
+          type: integer
+          format: int64
+          description: Unix time in milliseconds. See X-RateLimit-Reset for the meaning when allowed versus denied.
+        policy:
+          type: string
+          description: Name of the policy that applied, or `inline` for an inline limit.
+        degraded:
+          type: boolean
+          description: Present and true when the failure mode made the decision.
+        error:
+          type: string
+          enum: [store_unavailable]
+          description: Present on a fail-closed 503.
+    PolicyDefinition:
+      type: object
+      required: [algorithm, limit, windowSeconds]
+      properties:
+        route:
+          type: string
+          minLength: 1
+          maxLength: 256
+          default: '*'
+          description: Exact route, or a pattern where `*` matches any run of characters.
+        tier:
+          allOf:
+            - $ref: '#/components/schemas/PolicyName'
+          description: Optional. The policy applies only to requests sending this tier.
+        algorithm: { $ref: '#/components/schemas/Algorithm' }
+        limit: { $ref: '#/components/schemas/Limit' }
+        windowSeconds: { $ref: '#/components/schemas/Limit' }
+    PolicyCreate:
+      allOf:
+        - $ref: '#/components/schemas/PolicyDefinition'
+        - type: object
+          required: [name]
+          properties:
+            name: { $ref: '#/components/schemas/PolicyName' }
+    Policy:
+      allOf:
+        - $ref: '#/components/schemas/PolicyDefinition'
+        - type: object
+          required: [name, route]
+          properties:
+            name: { $ref: '#/components/schemas/PolicyName' }
+    NoMatchingPolicy:
+      type: object
+      required: [error, route, tier]
+      properties:
+        error: { type: string, enum: [no_matching_policy] }
+        route: { type: string }
+        tier: { type: string, nullable: true }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        details:
+          type: array
+          items: { type: string }
+        hint: { type: string }

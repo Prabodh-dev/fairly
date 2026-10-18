@@ -1,3 +1,6 @@
+import { fileURLToPath } from 'node:url';
+import fastifySwagger from '@fastify/swagger';
+import fastifySwaggerUi from '@fastify/swagger-ui';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance } from 'fastify';
 import type { Algorithm } from '../algorithms/types.js';
 import type { AlgorithmName, FailureMode } from '../config/types.js';
@@ -20,8 +23,16 @@ export interface ServerDeps {
   adminToken?: string | undefined;
 }
 
+const OPENAPI_PATH = fileURLToPath(new URL('../../openapi.yaml', import.meta.url));
+
 export function buildServer(deps: ServerDeps): FastifyInstance {
   const app = Fastify({ loggerInstance: deps.logger });
+  app.addHook('onResponse', (request, reply, done) => {
+    const route = request.routeOptions.url ?? 'unmatched';
+    deps.metrics.httpRequests.inc({ method: request.method, route, status: reply.statusCode });
+    deps.metrics.httpDuration.observe({ method: request.method, route }, reply.elapsedTime / 1000);
+    done();
+  });
   registerCheckRoute(app, {
     policies: deps.policies,
     algorithms: deps.algorithms,
@@ -36,5 +47,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   }
   registerHealthzRoute(app, deps.store, deps.metrics, deps.failureMode);
   registerMetricsRoute(app, deps.metrics.registry);
+  void app.register(fastifySwagger, { mode: 'static', specification: { path: OPENAPI_PATH, baseDir: '' } });
+  void app.register(fastifySwaggerUi, { routePrefix: '/docs' });
   return app;
 }

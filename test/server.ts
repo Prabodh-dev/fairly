@@ -34,10 +34,14 @@ export interface StartOptions {
 export async function startServer(options: StartOptions): Promise<RunningServer> {
   const store = await connectStore(options.redisUrl, options.commandTimeoutMs);
   const logger = options.logger ?? pino({ level: 'silent' });
+  const metrics = createMetrics();
   const policies = new PolicyStore({
     store,
     logger,
     seed: options.policies,
+    onChange: (count) => {
+      metrics.activePolicies.set(count);
+    },
     onFailure: (operation) => {
       metrics.redisFailures.inc({ operation, mode: options.failureMode ?? 'fail-closed' });
     },
@@ -46,7 +50,6 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   });
   await policies.refresh();
   if (options.policyRefreshMs !== undefined) policies.start();
-  const metrics = createMetrics();
   const app = buildServer({
     store,
     policies,
