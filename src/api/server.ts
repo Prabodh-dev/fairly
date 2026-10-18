@@ -1,6 +1,6 @@
 import Fastify, { type FastifyBaseLogger, type FastifyInstance } from 'fastify';
 import type { Algorithm } from '../algorithms/types.js';
-import type { AlgorithmName, FailurePolicy } from '../config/types.js';
+import type { AlgorithmName, FailureMode } from '../config/types.js';
 import type { Metrics } from '../metrics/index.js';
 import type { PolicyStore } from '../policy/store.js';
 import type { RedisStore } from '../store/redis.js';
@@ -13,7 +13,7 @@ export interface ServerDeps {
   store: RedisStore;
   policies: PolicyStore;
   algorithms: Record<AlgorithmName, Algorithm>;
-  failurePolicy: FailurePolicy;
+  failureMode: FailureMode;
   failClosedRetryAfterSeconds: number;
   metrics: Metrics;
   logger: FastifyBaseLogger;
@@ -25,7 +25,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   registerCheckRoute(app, {
     policies: deps.policies,
     algorithms: deps.algorithms,
-    failurePolicy: deps.failurePolicy,
+    failureMode: deps.failureMode,
     failClosedRetryAfterSeconds: deps.failClosedRetryAfterSeconds,
     metrics: deps.metrics,
   });
@@ -34,7 +34,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   } else {
     app.log.warn('FAIRLY_ADMIN_TOKEN is not set, the admin API is disabled');
   }
-  registerHealthzRoute(app, deps.store);
+  registerHealthzRoute(app, deps.store, deps.metrics, deps.failureMode);
   registerMetricsRoute(app, deps.metrics.registry);
   return app;
 }

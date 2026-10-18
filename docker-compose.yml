@@ -15,7 +15,7 @@ services:
         condition: service_healthy
     environment:
       REDIS_URL: redis://redis:6379
-      FAIRLY_FAILURE_POLICY: closed
+      FAIRLY_FAILURE_MODE: fail-open
       FAIRLY_CONFIG: /app/fairly.config.json
       LOG_LEVEL: warn
     ports:

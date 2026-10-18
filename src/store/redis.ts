@@ -25,18 +25,47 @@ export interface RedisOptions {
   commandTimeoutMs: number;
 }
 
+export class RedisTimeoutError extends Error {
+  constructor(operation: string, timeoutMs: number) {
+    super(`redis ${operation} did not complete within ${timeoutMs}ms`);
+    this.name = 'RedisTimeoutError';
+  }
+}
+
 export function createRedis(options: RedisOptions): Redis {
   return new Redis(options.url, {
     lazyConnect: true,
     enableOfflineQueue: false,
     maxRetriesPerRequest: 0,
     commandTimeout: options.commandTimeoutMs,
+    connectTimeout: options.commandTimeoutMs,
     retryStrategy: (attempt) => Math.min(attempt * 100, 2000),
   });
 }
 
 export class RedisStore implements ScriptRunner {
-  constructor(private readonly redis: Redis) {}
+  constructor(
+    private readonly redis: Redis,
+    private readonly timeoutMs: number,
+  ) {}
+
+  private withTimeout<T>(operation: string, start: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new RedisTimeoutError(operation, this.timeoutMs));
+      }, this.timeoutMs);
+      start().then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (err: unknown) => {
+          clearTimeout(timer);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        },
+      );
+    });
+  }
 
   onError(handler: (err: Error) => void): void {
     this.redis.on('error', handler);
@@ -49,23 +78,25 @@ export class RedisStore implements ScriptRunner {
   }
 
   run<T>(operation: (redis: Redis) => Promise<T>): Promise<T> {
-    return operation(this.redis);
+    return this.withTimeout('command', () => operation(this.redis));
   }
 
-  async execute(script: LuaScript, keys: string[], args: ScriptArg[]): Promise<unknown> {
-    try {
-      return await this.redis.evalsha(script.sha, keys.length, ...keys, ...args);
-    } catch (err) {
-      if (!(err instanceof Error) || !err.message.startsWith('NOSCRIPT')) {
-        throw err;
+  execute(script: LuaScript, keys: string[], args: ScriptArg[]): Promise<unknown> {
+    return this.withTimeout('script', async () => {
+      try {
+        return await this.redis.evalsha(script.sha, keys.length, ...keys, ...args);
+      } catch (err) {
+        if (!(err instanceof Error) || !err.message.startsWith('NOSCRIPT')) {
+          throw err;
+        }
       }
-    }
-    await this.redis.script('LOAD', script.source);
-    return this.redis.evalsha(script.sha, keys.length, ...keys, ...args);
+      await this.redis.script('LOAD', script.source);
+      return this.redis.evalsha(script.sha, keys.length, ...keys, ...args);
+    });
   }
 
   async ping(): Promise<void> {
-    await this.redis.ping();
+    await this.withTimeout('ping', () => this.redis.ping());
   }
 
   async close(): Promise<void> {

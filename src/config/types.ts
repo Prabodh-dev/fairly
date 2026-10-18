@@ -53,7 +53,9 @@ export const limitsConfigSchema = z.object({
 
 export type LimitsConfig = z.infer<typeof limitsConfigSchema>;
 
-export type FailurePolicy = 'open' | 'closed';
+export const FAILURE_MODES = ['fail-open', 'fail-closed'] as const;
+
+export type FailureMode = (typeof FAILURE_MODES)[number];
 
 export interface Settings {
   port: number;
@@ -61,7 +63,7 @@ export interface Settings {
   redisUrl: string;
   redisCommandTimeoutMs: number;
   configPath: string;
-  failurePolicy: FailurePolicy;
+  failureMode: FailureMode;
   logLevel: string;
   policyRefreshMs: number;
   failClosedRetryAfterSeconds: number;

@@ -9,7 +9,10 @@ import { createRedis, RedisStore } from './store/redis.js';
 const settings = loadSettings(process.env);
 const limits = loadLimitsConfig(settings.configPath);
 
-const store = new RedisStore(createRedis({ url: settings.redisUrl, commandTimeoutMs: settings.redisCommandTimeoutMs }));
+const store = new RedisStore(
+  createRedis({ url: settings.redisUrl, commandTimeoutMs: settings.redisCommandTimeoutMs }),
+  settings.redisCommandTimeoutMs,
+);
 const logger = pino({ level: settings.logLevel });
 const metrics = createMetrics();
 const policies = new PolicyStore({
@@ -18,14 +21,14 @@ const policies = new PolicyStore({
   seed: limits.policies,
   refreshMs: settings.policyRefreshMs,
   onFailure: (operation) => {
-    metrics.storeErrors.inc({ algorithm: operation, policy: settings.failurePolicy });
+    metrics.redisFailures.inc({ operation, mode: settings.failureMode });
   },
 });
 const app = buildServer({
   store,
   policies,
   algorithms: createAlgorithms({ store }),
-  failurePolicy: settings.failurePolicy,
+  failureMode: settings.failureMode,
   failClosedRetryAfterSeconds: settings.failClosedRetryAfterSeconds,
   metrics,
   logger,
@@ -33,7 +36,7 @@ const app = buildServer({
 });
 
 store.onError((err) => {
-  app.log.warn({ err, failurePolicy: settings.failurePolicy }, 'redis connection error');
+  app.log.warn({ err, failureMode: settings.failureMode }, 'redis connection error');
 });
 
 async function shutdown(signal: string): Promise<void> {
@@ -57,7 +60,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 
 try {
   await store.connect().catch((err: unknown) => {
-    app.log.warn({ err, failurePolicy: settings.failurePolicy }, 'redis not reachable at startup, continuing; requests follow the failure policy');
+    app.log.warn({ err, failureMode: settings.failureMode }, 'redis not reachable at startup, continuing; requests follow the failure mode');
   });
   await policies.refresh().catch((err: unknown) => {
     app.log.warn({ err }, 'initial policy load failed, using policies from the config file until Redis is reachable');

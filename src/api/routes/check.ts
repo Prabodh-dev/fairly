@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import type { Algorithm } from '../../algorithms/types.js';
-import { ALGORITHM_NAMES, limitSchema, type AlgorithmName, type FailurePolicy, type LimitSpec } from '../../config/types.js';
+import { ALGORITHM_NAMES, limitSchema, type AlgorithmName, type FailureMode, type LimitSpec } from '../../config/types.js';
 import type { Metrics } from '../../metrics/index.js';
 import type { PolicyStore } from '../../policy/store.js';
 
@@ -30,7 +30,7 @@ function setRateLimitHeaders(reply: FastifyReply, limit: number, remaining: numb
 export interface CheckRouteDeps {
   policies: PolicyStore;
   algorithms: Record<AlgorithmName, Algorithm>;
-  failurePolicy: FailurePolicy;
+  failureMode: FailureMode;
   failClosedRetryAfterSeconds: number;
   metrics: Metrics;
 }
@@ -70,11 +70,11 @@ export function registerCheckRoute(app: FastifyInstance, deps: CheckRouteDeps): 
       result = await algorithm.check(limitKey, routeLimit.limit, routeLimit.windowSeconds);
     } catch (err) {
       stopTimer();
-      const allowed = deps.failurePolicy === 'open';
-      deps.metrics.storeErrors.inc({ algorithm: routeLimit.algorithm, policy: deps.failurePolicy });
+      const allowed = deps.failureMode === 'fail-open';
+      deps.metrics.redisFailures.inc({ operation: 'check', mode: deps.failureMode });
       request.log.error(
-        { err, key, policy: policyName, algorithm: routeLimit.algorithm, failurePolicy: deps.failurePolicy, decision: allowed ? 'allowed' : 'rejected' },
-        'rate limit store unavailable, applying failure policy',
+        { err, key, policy: policyName, algorithm: routeLimit.algorithm, failureMode: deps.failureMode, decision: allowed ? 'allowed' : 'rejected' },
+        'redis unavailable, applying failure mode',
       );
       const nowMs = Date.now();
       void reply.header('X-Fairly-Degraded', 'true');

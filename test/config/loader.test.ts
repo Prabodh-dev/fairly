@@ -58,13 +58,28 @@ describe('limits config', () => {
 });
 
 describe('settings', () => {
-  it('requires an explicit failure policy', () => {
-    expect(() => loadSettings({})).toThrow(/FAIRLY_FAILURE_POLICY must be set/);
-    expect(() => loadSettings({ FAIRLY_FAILURE_POLICY: 'maybe' })).toThrow(/"maybe"/);
-    expect(loadSettings({ FAIRLY_FAILURE_POLICY: 'open' }).failurePolicy).toBe('open');
+  it('defaults the failure mode to fail-open', () => {
+    expect(loadSettings({}).failureMode).toBe('fail-open');
   });
 
-  it('rejects a non-positive port', () => {
-    expect(() => loadSettings({ FAIRLY_FAILURE_POLICY: 'closed', PORT: '0' })).toThrow(/PORT must be a positive integer/);
+  it('accepts both failure modes and rejects anything else', () => {
+    expect(loadSettings({ FAIRLY_FAILURE_MODE: 'fail-closed' }).failureMode).toBe('fail-closed');
+    expect(loadSettings({ FAIRLY_FAILURE_MODE: 'fail-open' }).failureMode).toBe('fail-open');
+    expect(() => loadSettings({ FAIRLY_FAILURE_MODE: 'closed' })).toThrow(/must be one of: fail-open, fail-closed, got "closed"/);
+  });
+
+  it('refuses the old failure policy variable instead of silently ignoring it', () => {
+    expect(() => loadSettings({ FAIRLY_FAILURE_POLICY: 'closed' })).toThrow(/replaced by FAIRLY_FAILURE_MODE/);
+  });
+
+  it('rejects a non-positive port or timeout', () => {
+    expect(() => loadSettings({ PORT: '0' })).toThrow(/PORT must be a positive integer/);
+    expect(() => loadSettings({ REDIS_COMMAND_TIMEOUT_MS: '-5' })).toThrow(/REDIS_COMMAND_TIMEOUT_MS must be a positive integer/);
+  });
+
+  it('requires an admin token of at least 16 characters when one is set', () => {
+    expect(loadSettings({}).adminToken).toBeUndefined();
+    expect(() => loadSettings({ FAIRLY_ADMIN_TOKEN: 'short' })).toThrow(/at least 16 characters/);
+    expect(loadSettings({ FAIRLY_ADMIN_TOKEN: 'a-long-enough-token' }).adminToken).toBe('a-long-enough-token');
   });
 });
