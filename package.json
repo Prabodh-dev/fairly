@@ -7,7 +7,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && cp -r src/algorithms/lua dist/algorithms/lua",
+    "build": "tsc -p tsconfig.build.json && cp -r src/algorithms/lua dist/algorithms/lua && cp -r src/policy/lua dist/policy/lua",
     "start": "node dist/main.js",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",

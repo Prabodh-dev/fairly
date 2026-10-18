@@ -1,16 +1,18 @@
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
-import { ALGORITHM_NAMES, type AlgorithmName, type LimitsConfig } from '../../src/config/types.js';
+import { ALGORITHM_NAMES, type AlgorithmName, type Policy } from '../../src/config/types.js';
 import { uniqueKey } from '../helpers.js';
 import { postCheck, startServer, type RunningServer } from '../server.js';
 
 const LIMIT = 100;
 const REQUESTS = 500;
 
-const limits: LimitsConfig = {
-  routes: Object.fromEntries(
-    ALGORITHM_NAMES.map((algorithm) => [algorithm, { algorithm, limit: LIMIT, windowSeconds: 3600 }]),
-  ),
-};
+const policies: Policy[] = ALGORITHM_NAMES.map((algorithm) => ({
+  name: algorithm,
+  route: algorithm,
+  algorithm,
+  limit: LIMIT,
+  windowSeconds: 3600,
+}));
 
 function tally(responses: { status: number }[]): { allowed: number; rejected: number; other: number } {
   const allowed = responses.filter((r) => r.status === 200).length;
@@ -22,8 +24,8 @@ describe.each(ALGORITHM_NAMES)('concurrency: %s', (name: AlgorithmName) => {
   let first: RunningServer;
   let second: RunningServer;
   beforeAll(async () => {
-    first = await startServer(inject('redisUrl'), limits);
-    second = await startServer(inject('redisUrl'), limits);
+    first = await startServer({ redisUrl: inject('redisUrl'), policies, policyPrefix: uniqueKey('policies') });
+    second = await startServer({ redisUrl: inject('redisUrl'), policies });
   });
   afterAll(async () => {
     await first.close();

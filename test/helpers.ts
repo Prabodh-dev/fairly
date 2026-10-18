@@ -19,7 +19,7 @@ export class ManualClock implements Clock {
 }
 
 export async function connectStore(redisUrl: string, commandTimeoutMs = 5000): Promise<RedisStore> {
-  const store = new RedisStore(createRedis({ url: redisUrl, commandTimeoutMs }));
+  const store = new RedisStore(createRedis({ url: redisUrl, commandTimeoutMs }), commandTimeoutMs);
   await store.connect();
   return store;
 }

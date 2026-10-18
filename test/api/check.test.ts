@@ -1,19 +1,17 @@
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
-import type { LimitsConfig } from '../../src/config/types.js';
+import type { Policy } from '../../src/config/types.js';
 import { uniqueKey } from '../helpers.js';
 import { post, postCheck, startServer, type RunningServer } from '../server.js';
 
-const limits: LimitsConfig = {
-  routes: {
-    strict: { algorithm: 'fixed-window', limit: 3, windowSeconds: 3600 },
-    bursty: { algorithm: 'token-bucket', limit: 2, windowSeconds: 3600 },
-  },
-};
+const policies: Policy[] = [
+  { name: 'strict', route: 'strict', algorithm: 'fixed-window', limit: 3, windowSeconds: 3600 },
+  { name: 'bursty', route: 'bursty', algorithm: 'token-bucket', limit: 2, windowSeconds: 3600 },
+];
 
 describe('POST /v1/check and GET /healthz', () => {
   let server: RunningServer;
   beforeAll(async () => {
-    server = await startServer(inject('redisUrl'), limits);
+    server = await startServer({ redisUrl: inject('redisUrl'), policies });
   });
   afterAll(async () => {
     await server.close();
@@ -60,7 +58,7 @@ describe('POST /v1/check and GET /healthz', () => {
     expect((await postCheck(server.url, 'bursty', key)).status).toBe(200);
   });
 
-  it('returns 404 for an unknown route and 400 for a malformed body', async () => {
+  it('returns 404 when no policy matches and 400 for a malformed body', async () => {
     const unknown = await postCheck(server.url, 'nope', 'k');
     expect(unknown.status).toBe(404);
 
@@ -93,8 +91,8 @@ describe('POST /v1/check and GET /healthz', () => {
     const key = uniqueKey('user');
     for (let i = 0; i < 4; i++) await postCheck(server.url, 'strict', key);
     const text = await (await fetch(`${server.url}/metrics`)).text();
-    expect(text).toMatch(/fairly_decisions_total\{route="strict",algorithm="fixed-window",decision="allowed"\} \d+/);
-    expect(text).toMatch(/fairly_decisions_total\{route="strict",algorithm="fixed-window",decision="rejected"\} [1-9]\d*/);
+    expect(text).toMatch(/fairly_decisions_total\{policy="strict",algorithm="fixed-window",decision="allowed"\} \d+/);
+    expect(text).toMatch(/fairly_decisions_total\{policy="strict",algorithm="fixed-window",decision="rejected"\} [1-9]\d*/);
     expect(text).toContain('fairly_check_duration_seconds_bucket');
   });
 

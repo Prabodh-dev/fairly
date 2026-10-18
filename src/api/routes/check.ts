@@ -1,22 +1,37 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import type { Algorithm } from '../../algorithms/types.js';
-import { ALGORITHM_NAMES, routeLimitSchema, type AlgorithmName, type FailurePolicy, type LimitsConfig, type RouteLimit } from '../../config/types.js';
+import { ALGORITHM_NAMES, limitSchema, type AlgorithmName, type FailureMode, type LimitSpec } from '../../config/types.js';
 import type { Metrics } from '../../metrics/index.js';
+import type { PolicyStore } from '../../policy/store.js';
 
 const keySchema = z.string().min(1).max(256);
 
 const checkBodySchema = z.union([
-  z.object({ key: keySchema, route: z.string().min(1).max(128) }).strict(),
-  z.object({ key: keySchema }).extend(routeLimitSchema.shape).strict(),
+  z
+    .object({
+      key: keySchema,
+      route: z.string().min(1).max(256),
+      tier: z.string().min(1).max(64).optional(),
+    })
+    .strict(),
+  z.object({ key: keySchema }).extend(limitSchema.shape).strict(),
 ]);
 
-const INLINE_ROUTE = 'inline';
+const INLINE_POLICY = 'inline';
+
+function setRateLimitHeaders(reply: FastifyReply, limit: number, remaining: number, resetAtMs: number): void {
+  void reply
+    .header('X-RateLimit-Limit', limit)
+    .header('X-RateLimit-Remaining', remaining)
+    .header('X-RateLimit-Reset', Math.ceil(resetAtMs / 1000));
+}
 
 export interface CheckRouteDeps {
-  limits: LimitsConfig;
+  policies: PolicyStore;
   algorithms: Record<AlgorithmName, Algorithm>;
-  failurePolicy: FailurePolicy;
+  failureMode: FailureMode;
+  failClosedRetryAfterSeconds: number;
   metrics: Metrics;
 }
 
@@ -27,27 +42,25 @@ export function registerCheckRoute(app: FastifyInstance, deps: CheckRouteDeps): 
       return reply.code(400).send({
         error: 'invalid_request',
         details: body.error.issues.map((issue) => issue.message),
-        hint: `send { key, route } for a configured route, or { key, algorithm, limit, windowSeconds } with algorithm one of: ${ALGORITHM_NAMES.join(', ')}`,
+        hint: `send { key, route, tier? } to use a named policy, or { key, algorithm, limit, windowSeconds } with algorithm one of: ${ALGORITHM_NAMES.join(', ')}`,
       });
     }
 
-    let routeName: string;
-    let routeLimit: RouteLimit;
-    let limitKey: string;
+    let policyName: string;
+    let routeLimit: LimitSpec;
     if ('route' in body.data) {
-      const configured = deps.limits.routes[body.data.route];
-      if (configured === undefined) {
-        return reply.code(404).send({ error: 'unknown_route', route: body.data.route });
+      const policy = deps.policies.resolve(body.data.route, body.data.tier);
+      if (policy === undefined) {
+        return reply.code(404).send({ error: 'no_matching_policy', route: body.data.route, tier: body.data.tier ?? null });
       }
-      routeName = body.data.route;
-      routeLimit = configured;
-      limitKey = `${routeName}:${body.data.key}`;
+      policyName = policy.name;
+      routeLimit = { algorithm: policy.algorithm, limit: policy.limit, windowSeconds: policy.windowSeconds };
     } else {
-      routeName = INLINE_ROUTE;
+      policyName = INLINE_POLICY;
       routeLimit = { algorithm: body.data.algorithm, limit: body.data.limit, windowSeconds: body.data.windowSeconds };
-      limitKey = `${INLINE_ROUTE}:${body.data.key}`;
     }
     const key = body.data.key;
+    const limitKey = `${policyName}:${key}`;
 
     const algorithm = deps.algorithms[routeLimit.algorithm];
     const stopTimer = deps.metrics.checkDuration.startTimer({ algorithm: routeLimit.algorithm });
@@ -57,32 +70,39 @@ export function registerCheckRoute(app: FastifyInstance, deps: CheckRouteDeps): 
       result = await algorithm.check(limitKey, routeLimit.limit, routeLimit.windowSeconds);
     } catch (err) {
       stopTimer();
-      const allowed = deps.failurePolicy === 'open';
-      deps.metrics.storeErrors.inc({ algorithm: routeLimit.algorithm, policy: deps.failurePolicy });
+      const allowed = deps.failureMode === 'fail-open';
+      deps.metrics.redisFailures.inc({ operation: 'check', mode: deps.failureMode });
       request.log.error(
-        { err, key, route: routeName, algorithm: routeLimit.algorithm, failurePolicy: deps.failurePolicy, decision: allowed ? 'allowed' : 'rejected' },
-        'rate limit store unavailable, applying failure policy',
+        { err, key, policy: policyName, algorithm: routeLimit.algorithm, failureMode: deps.failureMode, decision: allowed ? 'allowed' : 'rejected' },
+        'redis unavailable, applying failure mode',
       );
+      const nowMs = Date.now();
+      void reply.header('X-Fairly-Degraded', 'true');
       if (allowed) {
-        return reply.code(200).send({ allowed: true, degraded: true });
+        const resetAtMs = nowMs + routeLimit.windowSeconds * 1000;
+        setRateLimitHeaders(reply, routeLimit.limit, routeLimit.limit, resetAtMs);
+        return reply.code(200).send({ allowed: true, remaining: routeLimit.limit, resetAtMs, policy: policyName, degraded: true });
       }
-      return reply.code(503).send({ allowed: false, degraded: true, error: 'store_unavailable' });
+      const retryAfterSeconds = deps.failClosedRetryAfterSeconds;
+      const resetAtMs = nowMs + retryAfterSeconds * 1000;
+      setRateLimitHeaders(reply, routeLimit.limit, 0, resetAtMs);
+      return reply
+        .code(503)
+        .header('Retry-After', retryAfterSeconds)
+        .send({ allowed: false, remaining: 0, resetAtMs, policy: policyName, degraded: true, error: 'store_unavailable' });
     }
     stopTimer();
 
     const decision = result.allowed ? 'allowed' : 'rejected';
-    deps.metrics.decisions.inc({ route: routeName, algorithm: routeLimit.algorithm, decision });
+    deps.metrics.decisions.inc({ policy: policyName, algorithm: routeLimit.algorithm, decision });
     request.log.info(
-      { key, route: routeName, algorithm: routeLimit.algorithm, decision, remaining: result.remaining },
+      { key, policy: policyName, algorithm: routeLimit.algorithm, decision, remaining: result.remaining },
       'rate limit decision',
     );
 
-    void reply
-      .header('X-RateLimit-Limit', routeLimit.limit)
-      .header('X-RateLimit-Remaining', result.remaining)
-      .header('X-RateLimit-Reset', Math.ceil(result.resetAtMs / 1000));
+    setRateLimitHeaders(reply, routeLimit.limit, result.remaining, result.resetAtMs);
 
-    const payload = { allowed: result.allowed, remaining: result.remaining, resetAtMs: result.resetAtMs };
+    const payload = { allowed: result.allowed, remaining: result.remaining, resetAtMs: result.resetAtMs, policy: policyName };
     if (!result.allowed) {
       return reply
         .code(429)

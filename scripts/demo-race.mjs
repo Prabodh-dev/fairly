@@ -9,13 +9,13 @@ const WORKERS = 8;
 const BASE_URL = process.env.FAIRLY_URL ?? 'http://127.0.0.1:8080';
 
 function sendChecks({ route, key, count }) {
-  const agent = new http.Agent({ keepAlive: true, maxSockets: 64 });
+  const pool = new http.Agent({ keepAlive: true, maxSockets: 64 });
   const body = JSON.stringify({ route, key });
   const one = () =>
     new Promise((resolve, reject) => {
       const req = http.request(
         `${BASE_URL}/v1/check`,
-        { method: 'POST', agent, headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } },
+        { method: 'POST', agent: pool, headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } },
         (res) => {
           res.resume();
           res.on('end', () => resolve(res.statusCode));
@@ -24,7 +24,7 @@ function sendChecks({ route, key, count }) {
       req.on('error', reject);
       req.end(body);
     });
-  return Promise.all(Array.from({ length: count }, one)).finally(() => agent.destroy());
+  return Promise.all(Array.from({ length: count }, one)).finally(() => pool.destroy());
 }
 
 if (!isMainThread) {

@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { limitsConfigSchema, type FailurePolicy, type LimitsConfig, type Settings } from './types.js';
+import { limitsConfigSchema, FAILURE_MODES, type FailureMode, type LimitsConfig, type Settings } from './types.js';
 
 export class ConfigError extends Error {
   constructor(message: string) {
@@ -43,11 +43,24 @@ function parsePositiveInt(name: string, value: string): number {
   return parsed;
 }
 
-function parseFailurePolicy(value: string | undefined): FailurePolicy {
-  if (value !== 'open' && value !== 'closed') {
-    throw new ConfigError(
-      `FAIRLY_FAILURE_POLICY must be set to "open" or "closed" (there is no default), got ${value === undefined ? 'nothing' : `"${value}"`}`,
-    );
+function parseFailureMode(env: NodeJS.ProcessEnv): FailureMode {
+  if (env['FAIRLY_FAILURE_POLICY'] !== undefined) {
+    throw new ConfigError('FAIRLY_FAILURE_POLICY has been replaced by FAIRLY_FAILURE_MODE (fail-open or fail-closed)');
+  }
+  const value = env['FAIRLY_FAILURE_MODE'] ?? 'fail-open';
+  const mode = FAILURE_MODES.find((candidate) => candidate === value);
+  if (mode === undefined) {
+    throw new ConfigError(`FAIRLY_FAILURE_MODE must be one of: ${FAILURE_MODES.join(', ')}, got "${value}"`);
+  }
+  return mode;
+}
+
+function parseAdminToken(value: string | undefined): string | undefined {
+  if (value === undefined || value === '') {
+    return undefined;
+  }
+  if (value.length < 16) {
+    throw new ConfigError('FAIRLY_ADMIN_TOKEN must be at least 16 characters');
   }
   return value;
 }
@@ -59,7 +72,13 @@ export function loadSettings(env: NodeJS.ProcessEnv): Settings {
     redisUrl: env['REDIS_URL'] ?? 'redis://127.0.0.1:6379',
     redisCommandTimeoutMs: parsePositiveInt('REDIS_COMMAND_TIMEOUT_MS', env['REDIS_COMMAND_TIMEOUT_MS'] ?? '1000'),
     configPath: env['FAIRLY_CONFIG'] ?? 'fairly.config.json',
-    failurePolicy: parseFailurePolicy(env['FAIRLY_FAILURE_POLICY']),
+    failureMode: parseFailureMode(env),
     logLevel: env['LOG_LEVEL'] ?? 'info',
+    policyRefreshMs: parsePositiveInt('POLICY_REFRESH_MS', env['POLICY_REFRESH_MS'] ?? '2000'),
+    failClosedRetryAfterSeconds: parsePositiveInt(
+      'FAIRLY_FAIL_CLOSED_RETRY_AFTER_SECONDS',
+      env['FAIRLY_FAIL_CLOSED_RETRY_AFTER_SECONDS'] ?? '1',
+    ),
+    adminToken: parseAdminToken(env['FAIRLY_ADMIN_TOKEN']),
   };
 }

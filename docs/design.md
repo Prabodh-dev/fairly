@@ -8,11 +8,11 @@ Every algorithm is a single Lua script run with EVALSHA. Redis executes a script
 
 The current time used by a script is read from Redis `TIME` inside the script. No client clock is involved, so clock skew between fairly instances cannot change a decision. Tests inject a clock by passing an explicit timestamp argument to the script; production never does.
 
-Keys are `fairly:{<route>:<key>}:<suffix>`. The braces form a hash tag, so all keys a script touches for one limit would land in one slot on a clustered Redis.
+Keys are `fairly:{<policy name>:<key>}:<suffix>`. The braces form a hash tag, so all keys a script touches for one limit would land in one slot on a clustered Redis.
 
 ## Algorithms
 
-`limit` and `windowSeconds` come from the route configuration. Every `check` returns `allowed`, `remaining`, `resetAtMs` and `retryAfterMs`, all computed inside the script from the same time reading that made the decision.
+`limit` and `windowSeconds` come from the policy. Every `check` returns `allowed`, `remaining`, `resetAtMs` and `retryAfterMs`, all computed inside the script from the same time reading that made the decision.
 
 ### Fixed window
 
@@ -46,37 +46,56 @@ The balance is stored in integer units of 1/windowMs token (refill adds `limit` 
 
 HTTP: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` (epoch seconds, rounded up) are set on every decided response. A rejection returns 429 with `Retry-After` in whole seconds, rounded up, minimum 1.
 
+## Policies
+
+A policy is `{ name, route, tier?, algorithm, limit, windowSeconds }`. `POST /v1/check` takes `{ key, route, tier? }` and resolves the policy in memory.
+
+Resolution sorts policies once, whenever the set changes, by: exact route first, then wildcard routes by descending literal length, then tier-bearing before tier-less, then name. A request takes the first policy in that order whose route matches and whose tier is absent or equal to the request tier. Route specificity is ranked above tier so that a broad tier rule (`*` for premium) cannot silently bypass a deliberately strict route rule such as `/login`; a policy that names both route and tier is the way to give a tier its own limit on a route.
+
+Quota state is keyed by `<policy name>:<key>`. All routes matched by one policy share one quota per key. Renaming or recreating a policy therefore starts a fresh quota; editing its limit or window keeps the existing state.
+
+### Storage and propagation
+
+Policies are stored in one Redis hash (`fairly:policies`, field = name, value = JSON definition). The config file seeds the hash only if the flag key `fairly:policies:seeded` is unset, using a single script so concurrent instance starts seed once. After seeding, Redis is authoritative.
+
+Create and update go through one script that checks existence and writes (create fails if the name exists, update fails if it does not), so two instances cannot both create the same name. Each instance holds a compiled copy in memory and replaces it from `HGETALL` every `POLICY_REFRESH_MS`; the instance that performs a write also applies it locally at once. Other instances can therefore serve the previous policy for up to one refresh interval after a change. Entries in the hash that are not valid policies are logged and skipped. If a refresh fails the previous copy stays in use and `fairly_redis_failures_total{operation="policy_refresh"}` increases. Pub/sub notification was not used: polling needs no extra connection state and bounds staleness by a setting.
+
 ## API
 
-- `POST /v1/check` with `{ "key": "<api key or user id>", "route": "<configured route>" }`, or with an inline limit: `{ "key": "...", "algorithm": "token-bucket", "limit": 100, "windowSeconds": 60 }`. Inline limits are validated by the same schema as the config file. State for inline checks is kept under the `inline` route name. 200 when allowed, 429 when rejected, 400 for a malformed body, 404 for an unknown route.
-- `GET /metrics` exposes Prometheus metrics: `fairly_decisions_total{route,algorithm,decision}`, `fairly_store_errors_total{algorithm,policy}` and `fairly_check_duration_seconds{algorithm}`. The key is never a label.
-- `GET /healthz` returns 200 if Redis answers PING, 503 otherwise.
+- `POST /v1/check` with `{ "key", "route", "tier"? }`, or with an inline limit `{ "key", "algorithm", "limit", "windowSeconds" }` validated by the same schema as policies. 200 when allowed, 429 when denied, 400 for a malformed body, 404 `no_matching_policy`, 503 in fail-closed mode when Redis is unavailable.
+- `GET /v1/admin/policies`, `GET|PUT|DELETE /v1/admin/policies/:name`, `POST /v1/admin/policies`, guarded by the `X-Admin-Token` header. The token is compared as SHA-256 digests with `timingSafeEqual`. The routes are registered only when `FAIRLY_ADMIN_TOKEN` is set.
+- `GET /healthz` returns 200 if Redis answers PING within the timeout, 503 otherwise.
+- `GET /metrics` exposes `fairly_decisions_total{policy,algorithm,decision}`, `fairly_redis_failures_total{operation,mode}` and `fairly_check_duration_seconds{algorithm}`. The key is never a label.
 
-## Store failure policy
+## Redis failure handling
 
-`FAIRLY_FAILURE_POLICY` must be set to `open` or `closed`; the process refuses to start without it. When a check cannot reach Redis (error or `REDIS_COMMAND_TIMEOUT_MS` exceeded), the policy is applied and an error log with the key, route, algorithm, policy and resulting decision is written every time.
+Every Redis call made through `RedisStore` is raced against a timer (`REDIS_COMMAND_TIMEOUT_MS`) in addition to the client's own command timeout, and the client is configured with no offline queue and a connect timeout, so commands fail immediately while disconnected and after the timeout while connected to a Redis that stopped answering. All of this is asynchronous; a hung Redis holds individual requests for at most the timeout and never blocks the event loop. A late reply to a timed-out call is discarded.
 
-- `open`: respond 200 `{ "allowed": true, "degraded": true }`. No rate-limit headers are sent because no count exists.
-- `closed`: respond 503 `{ "allowed": false, "degraded": true, "error": "store_unavailable" }`.
+`FAIRLY_FAILURE_MODE` selects what a check does when it cannot complete:
+
+- `fail-open` (default): respond 200 `{ allowed: true, degraded: true }`. There is no count, so `X-RateLimit-Remaining` equals the limit and `X-RateLimit-Reset` is the application clock plus one window. This is the only place the application clock is used for a response.
+- `fail-closed`: respond 503 with `Retry-After` set to `FAIRLY_FAIL_CLOSED_RETRY_AFTER_SECONDS`, `X-RateLimit-Remaining: 0`. 503 is used instead of 429 because the client is not over its limit; the service cannot decide.
+
+Both modes log an error for every failed check and add `X-Fairly-Degraded: true`. Fail-open trades enforcement for availability: during an outage nothing is limited. Under fail-open with a Redis that hangs rather than refuses connections, each request still waits up to the timeout before being allowed, so the timeout is also the added latency during such an outage; lower it if that matters more than tolerating slow Redis replies.
 
 ## Configuration
 
-Limits are defined in a JSON file (`fairly.config.json`, path from `FAIRLY_CONFIG`):
+The seed file is JSON (`fairly.config.json`, path from `FAIRLY_CONFIG`), validated with Zod at startup:
 
 ```json
 {
-  "routes": {
-    "login": { "algorithm": "sliding-window-log", "limit": 5, "windowSeconds": 300 }
-  }
+  "policies": [
+    { "name": "login", "route": "/login", "algorithm": "sliding-window-log", "limit": 5, "windowSeconds": 300 }
+  ]
 }
 ```
 
-JSON was chosen over YAML because Node parses it with no dependency, and the structure is flat and small. The file is validated with Zod at startup; an unknown algorithm, a non-positive or non-integer `limit` or `windowSeconds`, an empty `routes` object, or a route name outside `[A-Za-z0-9_.-]` stops the process with an error naming the offending path. Route names exclude `:` and braces so that `route:key` composite keys are unambiguous.
+JSON was chosen over YAML because Node parses it with no dependency and the structure is flat. An unknown algorithm, a non-positive or non-integer `limit` or `windowSeconds`, a name or tier outside `[A-Za-z0-9_.-]`, an empty route, or duplicate names stop the process with an error naming the offending path. Names exclude `:` and braces so `<name>:<key>` state keys are unambiguous.
 
-Environment variables: `PORT` (8080), `HOST` (0.0.0.0), `REDIS_URL`, `REDIS_COMMAND_TIMEOUT_MS` (1000), `FAIRLY_CONFIG`, `FAIRLY_FAILURE_POLICY` (required), `LOG_LEVEL` (info).
+The environment variables are listed in the README.
 
 ## Tests
 
-Tests use Vitest and a real Redis started by Testcontainers (`test/global-setup.ts`); Docker must be available. Algorithm tests inject a manual clock so window and refill behavior is tested without sleeping. Concurrency tests (`test/api/concurrency.test.ts`) start real Fastify servers, send 500 requests with `Promise.all` over HTTP against a limit of 100 for each algorithm, and assert exactly 100 are allowed. They run both against one server and with requests split across two server instances sharing one Redis. The failure policy test stops its Redis container mid-test.
+Tests use Vitest and a real Redis started by Testcontainers (`test/global-setup.ts`); Docker must be available. Algorithm tests inject a manual clock so window and refill behavior is tested without sleeping. Concurrency tests (`test/api/concurrency.test.ts`) start real Fastify servers, send 500 requests with `Promise.all` over HTTP against a limit of 100 for each algorithm, and assert exactly 100 are allowed. They run both against one server and with requests split across two server instances sharing one Redis. The resilience tests stop and pause their Redis container mid-test, in both failure modes.
 
 `scripts/demo-race.mjs [algorithm|all] [--keep] [--no-compose]` starts the compose stack, fires 1000 concurrent requests from 8 worker threads at a route with limit 1000, then fires 1000 more and reports allowed and rejected counts per algorithm. The demo routes use a 86400 second window so a window boundary cannot fall inside a run in practice.
