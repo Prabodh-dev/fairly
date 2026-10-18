@@ -25,6 +25,7 @@ export interface StartOptions {
   clock?: Clock;
   policyPrefix?: string;
   policyRefreshMs?: number;
+  adminToken?: string;
 }
 
 export async function startServer(options: StartOptions): Promise<RunningServer> {
@@ -46,6 +47,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     failurePolicy: options.failurePolicy ?? 'closed',
     metrics: createMetrics(),
     logger,
+    adminToken: options.adminToken,
   });
   await app.listen({ port: 0, host: '127.0.0.1' });
   const address = app.server.address() as AddressInfo;

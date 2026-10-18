@@ -28,6 +28,7 @@ const app = buildServer({
   failurePolicy: settings.failurePolicy,
   metrics,
   logger,
+  adminToken: settings.adminToken,
 });
 
 store.onError((err) => {
