@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { limitsConfigSchema, FAILURE_MODES, type FailureMode, type LimitsConfig, type Settings } from './types.js';
 
 export class ConfigError extends Error {
@@ -19,7 +20,23 @@ export function parseLimitsConfig(raw: unknown): LimitsConfig {
   return result.data;
 }
 
-export function loadLimitsConfig(path: string): LimitsConfig {
+export interface FilePathOptions {
+  windows?: boolean;
+}
+
+export function toFilePath(input: string | URL, options: FilePathOptions = {}): string {
+  const fileUrlOptions = options.windows === undefined ? undefined : { windows: options.windows };
+  if (input instanceof URL) {
+    return fileURLToPath(input, fileUrlOptions);
+  }
+  if (input.startsWith('file:')) {
+    return fileURLToPath(input, fileUrlOptions);
+  }
+  return input;
+}
+
+export function loadLimitsConfig(input: string | URL): LimitsConfig {
+  const path = toFilePath(input);
   let text: string;
   try {
     text = readFileSync(path, 'utf8');
