@@ -5,12 +5,12 @@ import type { PolicyStore } from '../../policy/store.js';
 
 export const ADMIN_TOKEN_HEADER = 'x-admin-token';
 
-function digest(value: string): Buffer {
+export function digestToken(value: string): Buffer {
   return createHash('sha256').update(value).digest();
 }
 
-function tokenMatches(provided: unknown, expected: Buffer): boolean {
-  return typeof provided === 'string' && timingSafeEqual(digest(provided), expected);
+export function tokenMatches(provided: unknown, expected: Buffer): boolean {
+  return typeof provided === 'string' && timingSafeEqual(digestToken(provided), expected);
 }
 
 function invalid(reply: FastifyReply, issues: { message: string }[]): FastifyReply {
@@ -18,7 +18,7 @@ function invalid(reply: FastifyReply, issues: { message: string }[]): FastifyRep
 }
 
 export function registerAdminRoutes(app: FastifyInstance, policies: PolicyStore, adminToken: string): void {
-  const expected = digest(adminToken);
+  const expected = digestToken(adminToken);
 
   void app.register((admin, _options, done) => {
     admin.addHook('onRequest', async (request, reply) => {
