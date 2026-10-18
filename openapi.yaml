@@ -309,7 +309,7 @@ components:
       additionalProperties: false
       required: [key, route]
       properties:
-        key: { type: string, minLength: 1, maxLength: 256, description: API key, user id or any identifier being limited. }
+        key: { type: string, minLength: 1, maxLength: 256, description: 'API key, user id or any other identifier being limited.' }
         route:
           type: string
           minLength: 1
