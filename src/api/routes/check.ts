@@ -76,6 +76,7 @@ export function registerCheckRoute(app: FastifyInstance, deps: CheckRouteDeps): 
         { err, key, policy: policyName, algorithm: routeLimit.algorithm, failureMode: deps.failureMode, decision: allowed ? 'allowed' : 'rejected' },
         'redis unavailable, applying failure mode',
       );
+      deps.metrics.degradedDecisions.inc({ mode: deps.failureMode, decision: allowed ? 'allowed' : 'rejected' });
       const nowMs = Date.now();
       void reply.header('X-Fairly-Degraded', 'true');
       if (allowed) {

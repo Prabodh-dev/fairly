@@ -20,6 +20,9 @@ const policies = new PolicyStore({
   logger,
   seed: limits.policies,
   refreshMs: settings.policyRefreshMs,
+  onChange: (count) => {
+    metrics.activePolicies.set(count);
+  },
   onFailure: (operation) => {
     metrics.redisFailures.inc({ operation, mode: settings.failureMode });
   },

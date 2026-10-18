@@ -22,6 +22,12 @@ export interface ServerDeps {
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
   const app = Fastify({ loggerInstance: deps.logger });
+  app.addHook('onResponse', (request, reply, done) => {
+    const route = request.routeOptions.url ?? 'unmatched';
+    deps.metrics.httpRequests.inc({ method: request.method, route, status: reply.statusCode });
+    deps.metrics.httpDuration.observe({ method: request.method, route }, reply.elapsedTime / 1000);
+    done();
+  });
   registerCheckRoute(app, {
     policies: deps.policies,
     algorithms: deps.algorithms,
