@@ -1,0 +1,49 @@
+import { z } from 'zod';
+
+export const ALGORITHM_NAMES = [
+  'fixed-window',
+  'sliding-window-log',
+  'sliding-window-counter',
+  'token-bucket',
+] as const;
+
+export type AlgorithmName = (typeof ALGORITHM_NAMES)[number];
+
+export const routeLimitSchema = z.object({
+  algorithm: z.enum(ALGORITHM_NAMES, {
+    error: `algorithm must be one of: ${ALGORITHM_NAMES.join(', ')}`,
+  }),
+  limit: z.number({ error: 'limit must be a number' }).int('limit must be an integer').positive('limit must be positive'),
+  windowSeconds: z
+    .number({ error: 'windowSeconds must be a number' })
+    .int('windowSeconds must be an integer')
+    .positive('windowSeconds must be positive'),
+});
+
+export type RouteLimit = z.infer<typeof routeLimitSchema>;
+
+const ROUTE_NAME_PATTERN = /^[A-Za-z0-9_.-]+$/;
+
+export const limitsConfigSchema = z.object({
+  routes: z
+    .record(z.string(), routeLimitSchema)
+    .refine((routes) => Object.keys(routes).length > 0, 'at least one route must be defined')
+    .refine(
+      (routes) => Object.keys(routes).every((name) => ROUTE_NAME_PATTERN.test(name)),
+      'route names may contain only letters, digits, underscore, dot and hyphen',
+    ),
+});
+
+export type LimitsConfig = z.infer<typeof limitsConfigSchema>;
+
+export type FailurePolicy = 'open' | 'closed';
+
+export interface Settings {
+  port: number;
+  host: string;
+  redisUrl: string;
+  redisCommandTimeoutMs: number;
+  configPath: string;
+  failurePolicy: FailurePolicy;
+  logLevel: string;
+}
