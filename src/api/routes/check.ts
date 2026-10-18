@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import type { Algorithm } from '../../algorithms/types.js';
 import { ALGORITHM_NAMES, limitSchema, type AlgorithmName, type FailurePolicy, type LimitSpec } from '../../config/types.js';
@@ -20,10 +20,18 @@ const checkBodySchema = z.union([
 
 const INLINE_POLICY = 'inline';
 
+function setRateLimitHeaders(reply: FastifyReply, limit: number, remaining: number, resetAtMs: number): void {
+  void reply
+    .header('X-RateLimit-Limit', limit)
+    .header('X-RateLimit-Remaining', remaining)
+    .header('X-RateLimit-Reset', Math.ceil(resetAtMs / 1000));
+}
+
 export interface CheckRouteDeps {
   policies: PolicyStore;
   algorithms: Record<AlgorithmName, Algorithm>;
   failurePolicy: FailurePolicy;
+  failClosedRetryAfterSeconds: number;
   metrics: Metrics;
 }
 
@@ -68,10 +76,20 @@ export function registerCheckRoute(app: FastifyInstance, deps: CheckRouteDeps): 
         { err, key, policy: policyName, algorithm: routeLimit.algorithm, failurePolicy: deps.failurePolicy, decision: allowed ? 'allowed' : 'rejected' },
         'rate limit store unavailable, applying failure policy',
       );
+      const nowMs = Date.now();
+      void reply.header('X-Fairly-Degraded', 'true');
       if (allowed) {
-        return reply.code(200).send({ allowed: true, degraded: true });
+        const resetAtMs = nowMs + routeLimit.windowSeconds * 1000;
+        setRateLimitHeaders(reply, routeLimit.limit, routeLimit.limit, resetAtMs);
+        return reply.code(200).send({ allowed: true, remaining: routeLimit.limit, resetAtMs, policy: policyName, degraded: true });
       }
-      return reply.code(503).send({ allowed: false, degraded: true, error: 'store_unavailable' });
+      const retryAfterSeconds = deps.failClosedRetryAfterSeconds;
+      const resetAtMs = nowMs + retryAfterSeconds * 1000;
+      setRateLimitHeaders(reply, routeLimit.limit, 0, resetAtMs);
+      return reply
+        .code(503)
+        .header('Retry-After', retryAfterSeconds)
+        .send({ allowed: false, remaining: 0, resetAtMs, policy: policyName, degraded: true, error: 'store_unavailable' });
     }
     stopTimer();
 
@@ -82,10 +100,7 @@ export function registerCheckRoute(app: FastifyInstance, deps: CheckRouteDeps): 
       'rate limit decision',
     );
 
-    void reply
-      .header('X-RateLimit-Limit', routeLimit.limit)
-      .header('X-RateLimit-Remaining', result.remaining)
-      .header('X-RateLimit-Reset', Math.ceil(result.resetAtMs / 1000));
+    setRateLimitHeaders(reply, routeLimit.limit, result.remaining, result.resetAtMs);
 
     const payload = { allowed: result.allowed, remaining: result.remaining, resetAtMs: result.resetAtMs, policy: policyName };
     if (!result.allowed) {

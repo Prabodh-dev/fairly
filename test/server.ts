@@ -45,6 +45,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     policies,
     algorithms: createAlgorithms(options.clock === undefined ? { store } : { store, clock: options.clock }),
     failurePolicy: options.failurePolicy ?? 'closed',
+    failClosedRetryAfterSeconds: 1,
     metrics: createMetrics(),
     logger,
     adminToken: options.adminToken,

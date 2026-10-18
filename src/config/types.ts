@@ -64,5 +64,6 @@ export interface Settings {
   failurePolicy: FailurePolicy;
   logLevel: string;
   policyRefreshMs: number;
+  failClosedRetryAfterSeconds: number;
   adminToken: string | undefined;
 }

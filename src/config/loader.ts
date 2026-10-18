@@ -72,6 +72,10 @@ export function loadSettings(env: NodeJS.ProcessEnv): Settings {
     failurePolicy: parseFailurePolicy(env['FAIRLY_FAILURE_POLICY']),
     logLevel: env['LOG_LEVEL'] ?? 'info',
     policyRefreshMs: parsePositiveInt('POLICY_REFRESH_MS', env['POLICY_REFRESH_MS'] ?? '2000'),
+    failClosedRetryAfterSeconds: parsePositiveInt(
+      'FAIRLY_FAIL_CLOSED_RETRY_AFTER_SECONDS',
+      env['FAIRLY_FAIL_CLOSED_RETRY_AFTER_SECONDS'] ?? '1',
+    ),
     adminToken: parseAdminToken(env['FAIRLY_ADMIN_TOKEN']),
   };
 }

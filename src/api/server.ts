@@ -14,6 +14,7 @@ export interface ServerDeps {
   policies: PolicyStore;
   algorithms: Record<AlgorithmName, Algorithm>;
   failurePolicy: FailurePolicy;
+  failClosedRetryAfterSeconds: number;
   metrics: Metrics;
   logger: FastifyBaseLogger;
   adminToken?: string | undefined;
@@ -25,6 +26,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     policies: deps.policies,
     algorithms: deps.algorithms,
     failurePolicy: deps.failurePolicy,
+    failClosedRetryAfterSeconds: deps.failClosedRetryAfterSeconds,
     metrics: deps.metrics,
   });
   if (deps.adminToken !== undefined) {

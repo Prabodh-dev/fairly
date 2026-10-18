@@ -26,6 +26,7 @@ const app = buildServer({
   policies,
   algorithms: createAlgorithms({ store }),
   failurePolicy: settings.failurePolicy,
+  failClosedRetryAfterSeconds: settings.failClosedRetryAfterSeconds,
   metrics,
   logger,
   adminToken: settings.adminToken,

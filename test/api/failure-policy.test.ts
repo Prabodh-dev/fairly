@@ -34,12 +34,16 @@ describe('store failure policy', () => {
 
     const openResponse = await postCheck(open.url, 'r', 'k2');
     expect(openResponse.status).toBe(200);
-    expect(openResponse.body).toEqual({ allowed: true, degraded: true });
-    expect(openResponse.headers.get('x-ratelimit-remaining')).toBeNull();
+    expect(openResponse.body).toMatchObject({ allowed: true, degraded: true });
+    expect(openResponse.headers.get('x-ratelimit-limit')).toBe('1');
+    expect(openResponse.headers.get('x-ratelimit-remaining')).toBe('1');
+    expect(openResponse.headers.get('x-fairly-degraded')).toBe('true');
 
     const closedResponse = await postCheck(closed.url, 'r', 'k2');
     expect(closedResponse.status).toBe(503);
     expect(closedResponse.body).toMatchObject({ allowed: false, degraded: true });
+    expect(closedResponse.headers.get('x-ratelimit-remaining')).toBe('0');
+    expect(closedResponse.headers.get('retry-after')).toBe('1');
 
     expect((await fetch(`${closed.url}/healthz`)).status).toBe(503);
 
