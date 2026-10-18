@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { ConfigError, loadLimitsConfig, loadSettings, parseLimitsConfig } from '../../src/config/loader.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { ConfigError, loadLimitsConfig, loadSettings, parseLimitsConfig, toFilePath } from '../../src/config/loader.js';
 
 const policy = { name: 'api', route: '/api/*', algorithm: 'token-bucket', limit: 10, windowSeconds: 60 };
 const valid = { policies: [policy] };
@@ -48,12 +50,70 @@ describe('limits config', () => {
 
   it('reports unreadable and malformed files', () => {
     expect(() => loadLimitsConfig('/nonexistent/fairly.json')).toThrow(/cannot read limits config/);
-    expect(() => loadLimitsConfig(new URL('../../package.json', import.meta.url).pathname)).toThrow(/invalid limits config/);
+    expect(() => loadLimitsConfig(new URL('../../package.json', import.meta.url))).toThrow(/invalid limits config/);
   });
 
   it('loads the shipped config file', () => {
-    const config = loadLimitsConfig(new URL('../../fairly.config.json', import.meta.url).pathname);
+    const config = loadLimitsConfig(new URL('../../fairly.config.json', import.meta.url));
     expect(config.policies.map((p) => p.name)).toContain('demo-token-bucket');
+  });
+
+  it('loads the same file from a URL object, a file URL string and a plain path', () => {
+    const url = new URL('../../fairly.config.json', import.meta.url);
+    const fromUrl = loadLimitsConfig(url);
+    expect(loadLimitsConfig(url.href)).toEqual(fromUrl);
+    expect(loadLimitsConfig(fileURLToPath(url))).toEqual(fromUrl);
+  });
+
+  it('reports the resolved filesystem path, not the URL, when a file URL cannot be read', () => {
+    const missing = new URL('../../does-not-exist.json', import.meta.url);
+    expect(() => loadLimitsConfig(missing)).toThrow(`cannot read limits config at ${fileURLToPath(missing)}`);
+  });
+});
+
+describe('toFilePath', () => {
+  const windowsUrl = 'file:///C:/Prabodh/Projects/fairly/fairly.config.json';
+  const windowsPath = 'C:\\Prabodh\\Projects\\fairly\\fairly.config.json';
+
+  it('turns a Windows file URL string into a drive-letter path without a doubled drive', () => {
+    expect(toFilePath(windowsUrl, { windows: true })).toBe(windowsPath);
+  });
+
+  it('turns a Windows file URL object into the same drive-letter path', () => {
+    expect(toFilePath(new URL(windowsUrl), { windows: true })).toBe(windowsPath);
+  });
+
+  it('shows why URL.pathname is wrong for Windows: it keeps the leading slash that makes C:\\C:\\', () => {
+    expect(new URL(windowsUrl).pathname).toBe('/C:/Prabodh/Projects/fairly/fairly.config.json');
+    expect(path.win32.resolve('C:\\work', new URL(windowsUrl).pathname)).toBe('C:\\C:\\Prabodh\\Projects\\fairly\\fairly.config.json');
+    expect(path.win32.resolve('C:\\work', toFilePath(windowsUrl, { windows: true }))).toBe(windowsPath);
+  });
+
+  it('handles Windows UNC file URLs and percent-encoded characters', () => {
+    expect(toFilePath('file://server/share/fairly/config.json', { windows: true })).toBe('\\\\server\\share\\fairly\\config.json');
+    expect(toFilePath('file:///C:/My%20Projects/fairly/config.json', { windows: true })).toBe('C:\\My Projects\\fairly\\config.json');
+  });
+
+  it('turns POSIX file URLs into POSIX paths and decodes percent-encoding', () => {
+    expect(toFilePath('file:///home/user/fairly/fairly.config.json', { windows: false })).toBe('/home/user/fairly/fairly.config.json');
+    expect(toFilePath(new URL('file:///home/user/my%20dir/fairly.config.json'), { windows: false })).toBe('/home/user/my dir/fairly.config.json');
+  });
+
+  it('rejects a file URL that cannot be a path on the target platform', () => {
+    expect(() => toFilePath('file://server/share/x.json', { windows: false })).toThrow();
+    expect(() => toFilePath('file:///C:/x%2Fy.json', { windows: false })).toThrow();
+  });
+
+  it('returns plain Windows, POSIX and relative paths unchanged', () => {
+    expect(toFilePath('C:\\Prabodh\\Projects\\fairly\\fairly.config.json')).toBe('C:\\Prabodh\\Projects\\fairly\\fairly.config.json');
+    expect(toFilePath('/home/user/fairly/fairly.config.json')).toBe('/home/user/fairly/fairly.config.json');
+    expect(toFilePath('fairly.config.json')).toBe('fairly.config.json');
+    expect(toFilePath('.\\config\\fairly.config.json')).toBe('.\\config\\fairly.config.json');
+  });
+
+  it('uses the platform default when no option is given', () => {
+    const url = new URL('../../fairly.config.json', import.meta.url);
+    expect(toFilePath(url)).toBe(fileURLToPath(url));
   });
 });
 
