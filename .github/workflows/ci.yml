@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint, typecheck, build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
+
+  docker:
+    name: Docker build and smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build --tag fairly:ci .
+
+      - name: Start the stack
+        run: docker compose up --build --wait --detach
+
+      - name: Check the service answers
+        run: |
+          curl --fail --silent --show-error http://127.0.0.1:8080/healthz
+          curl --fail --silent --show-error --request POST http://127.0.0.1:8080/v1/check \
+            --header 'content-type: application/json' \
+            --data '{"key":"ci","route":"/login"}'
+
+      - name: Show service logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Stop the stack
+        if: always()
+        run: docker compose down --volumes

@@ -4,6 +4,7 @@ import { createAlgorithms } from './algorithms/index.js';
 import { loadLimitsConfig, loadSettings } from './config/loader.js';
 import { createMetrics } from './metrics/index.js';
 import { PolicyStore } from './policy/store.js';
+import { createShutdown } from './shutdown.js';
 import { createRedis, RedisStore } from './store/redis.js';
 
 const settings = loadSettings(process.env);
@@ -42,22 +43,18 @@ store.onError((err) => {
   app.log.warn({ err, failureMode: settings.failureMode }, 'redis connection error');
 });
 
-async function shutdown(signal: string): Promise<void> {
-  app.log.info({ signal }, 'shutting down');
-  policies.stop();
-  await app.close();
-  await store.close();
-}
+const shutdown = createShutdown({
+  app,
+  policies,
+  store,
+  logger,
+  timeoutMs: settings.shutdownTimeoutMs,
+  exit: (code) => process.exit(code),
+});
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  process.once(signal, () => {
-    shutdown(signal).then(
-      () => process.exit(0),
-      (err: unknown) => {
-        app.log.error({ err }, 'shutdown failed');
-        process.exit(1);
-      },
-    );
+  process.on(signal, () => {
+    void shutdown(signal);
   });
 }
 

@@ -1,8 +1,89 @@
 # fairly
 
-A distributed rate limiter and API quota service. One question, answered atomically under concurrency: has this key exceeded its quota right now.
+[![CI](https://github.com/Prabodh-dev/fairly/actions/workflows/ci.yml/badge.svg)](https://github.com/Prabodh-dev/fairly/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Every decision is a single Lua script executed in Redis. The script reads state, decides, and updates state in one step, so concurrent requests cannot interleave between the check and the write. Time comes from Redis `TIME` inside the script, so clock skew between service instances does not affect decisions.
+fairly is a distributed rate limiter and API quota service. It answers one question, correctly under heavy concurrency: has this key exceeded its quota right now.
+
+It exists to make the trade-offs between rate limiting algorithms concrete. Fixed window, sliding window log, sliding window counter and token bucket are all implemented behind one interface, each as a single atomic Redis script, so the same load can be pointed at each and the cost and behavior compared with real numbers (see [Benchmarks](#benchmarks)). Around the algorithms is the rest of what a service needs to be run: named policies you can change at runtime, standard rate limit headers, a predictable failure mode for when Redis is down, metrics, an OpenAPI spec and graceful shutdown.
+
+fairly is the admission-control part of a set of three backend projects that follow a request through its lifecycle: **fairly admits** a request, **steadily routes** it, and **durably executes** it. This repository is the first stage, deciding whether a request gets in at all.
+
+## Quickstart
+
+### With Docker Compose
+
+```
+git clone https://github.com/Prabodh-dev/fairly.git
+cd fairly
+docker compose up --build
+```
+
+This builds the image and starts the service on port 8080 next to a Redis, with the service waiting for Redis to be healthy first. `docker compose ps` shows the service as healthy once its `HEALTHCHECK` passes.
+
+### From source
+
+You need Node 22 (20 or later works), pnpm, and a Redis 7 to talk to. The repository pins its pnpm version, so `corepack enable` is enough to get the right one.
+
+```
+git clone https://github.com/Prabodh-dev/fairly.git
+cd fairly
+corepack enable
+pnpm install
+docker run -d --name fairly-redis -p 6379:6379 redis:7-alpine
+pnpm build
+pnpm start
+```
+
+### Try it
+
+The shipped policies limit `/login` to 5 requests per 5 minutes per key. Send six:
+
+```
+for i in 1 2 3 4 5 6; do
+  curl -s -i -X POST localhost:8080/v1/check \
+    -H 'content-type: application/json' \
+    -d '{"key":"user-42","route":"/login"}' | grep -iE '^HTTP|^x-ratelimit-remaining|^retry-after|^\{'
+done
+```
+
+The first five return `200` with a falling `X-RateLimit-Remaining`; the sixth returns `429` with `Retry-After`. Then open <http://localhost:8080/docs> for the interactive API documentation, <http://localhost:8080/metrics> for Prometheus metrics, and see [Admin API](#admin-api) to change limits while it runs.
+
+## Benchmarks
+
+`scripts/benchmark.mjs` runs all four algorithms under identical load (same requests, concurrency, key sequence and Redis) at 1, 16, 64 and 256 concurrent lanes, in-process against Redis and through the HTTP API, and measures throughput, p50/p95/p99 latency, Redis CPU and bytes of Redis memory per tracked key. Full tables, method, caveats and the analysis are in [`docs/benchmarks.md`](docs/benchmarks.md). On a 4 vCPU machine shared by Redis, the service and the load generator:
+
+| Concurrency 64 | Engine req/s | Engine p99 | HTTP req/s | HTTP p99 | Bytes per key at limit 100 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| fixed-window | 87,777 | 1.96 ms | 14,572 | 10.58 ms | 80 |
+| sliding-window-log | 67,700 | 2.19 ms | 14,841 | 9.51 ms | 5,192 |
+| sliding-window-counter | 82,790 | 1.96 ms | 14,896 | 10.84 ms | 80 |
+| token-bucket | 75,716 | 2.22 ms | 15,290 | 9.47 ms | 104 |
+
+Why these numbers matter: all four algorithms enforce the same limit exactly under concurrency, so the choice between them is a choice about cost and behavior, and the numbers say what each costs. The sliding window log is the most precise and the most expensive: about 15 to 25 percent fewer checks per second out of Redis than fixed window, and memory that grows with the limit (5 KB per key at a limit of 100, 1.3 MB at 10,000, against a constant 80 bytes for fixed window). Fixed window and the sliding window counter are the cheapest. Token bucket costs a small constant per key and is the only one that lets a client burst and then refills it at a steady rate (it admitted 55 percent of requests in a test where the others admitted 50). Through HTTP the four are within noise of each other, because the Node process, not Redis, is the limit there; script cost matters once several service instances share one Redis. Treat the absolute figures as one machine's, and the ratios as the finding.
+
+## How it works
+
+```
+clients ──> fairly instance(s) ──> Redis
+            Fastify + Zod           Lua scripts: one atomic check-and-update per decision
+            policy cache            policy hash shared by every instance
+```
+
+- **Atomic decisions.** Each check is one Lua script run by Redis: it reads state, decides, and writes in a single step, so concurrent requests cannot interleave between the check and the update. Time comes from Redis, not from the service. Tests fire 500 concurrent HTTP requests at a limit of 100 for every algorithm and assert exactly 100 are allowed. [docs/design.md](docs/design.md) has the details.
+- **Policies.** Rules map a route pattern and optional tier to an algorithm, limit and window. They live in Redis, are cached in each instance, and can be changed through the admin API without a restart.
+- **Failure behavior.** Every Redis call has a timeout. When Redis cannot answer, a single configured mode decides: fail open (allow) or fail closed (deny), and every occurrence is logged and counted.
+- **Shutdown.** On SIGTERM or SIGINT the server stops accepting connections, lets in-flight requests finish within a timeout, closes the Redis connection and exits.
+
+## Documentation
+
+| | |
+| --- | --- |
+| [docs/benchmarks.md](docs/benchmarks.md) | Method, full results and analysis for all four algorithms |
+| [docs/design.md](docs/design.md) | Atomicity, each algorithm's semantics, policies, failure handling |
+| [docs/configuration.md](docs/configuration.md) | Every environment variable, with defaults and effects |
+| [openapi.yaml](openapi.yaml) | API contract, also served at `/docs` |
+| [docs/grafana-dashboard.json](docs/grafana-dashboard.json) | Importable Grafana dashboard for the metrics |
 
 ## Algorithms
 
@@ -152,54 +233,32 @@ curl -X PUT localhost:8080/v1/admin/policies/login \
 
 Changing a policy does not reset existing quota state. Changing a policy's algorithm starts fresh state for that algorithm.
 
+Tokens are compared as SHA-256 digests with `crypto.timingSafeEqual`, so neither the content nor the length of a wrong token affects how long the comparison takes. Unauthenticated requests are rejected before any request body is read.
+
 ## Configuration
 
-Environment variables:
+All settings are environment variables, plus one JSON file of seed policies. [docs/configuration.md](docs/configuration.md) lists every variable with its default and what it affects, and [`.env.example`](.env.example) is a template: copy it to `.env` and Docker Compose picks it up. The two you will most likely set are `FAIRLY_FAILURE_MODE` (`fail-open` by default) and `FAIRLY_ADMIN_TOKEN` (admin API disabled until set).
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `REDIS_URL` | `redis://127.0.0.1:6379` | Redis to use |
-| `FAIRLY_CONFIG` | `fairly.config.json` | Seed policies |
-| `FAIRLY_FAILURE_MODE` | `fail-open` | `fail-open` or `fail-closed` |
-| `FAIRLY_FAIL_CLOSED_RETRY_AFTER_SECONDS` | `1` | `Retry-After` sent in fail-closed mode |
-| `REDIS_COMMAND_TIMEOUT_MS` | `1000` | Timeout for every Redis call |
-| `POLICY_REFRESH_MS` | `2000` | How often an instance re-reads policies |
-| `FAIRLY_ADMIN_TOKEN` | unset | Enables the admin API |
-| `PORT`, `HOST`, `LOG_LEVEL` | `8080`, `0.0.0.0`, `info` | Server |
+## Running in production
 
-The config file is JSON and is validated at startup; an unknown algorithm, a non-positive or non-integer limit or window, a bad name, or duplicate names stop the process with an error naming the field. `FAIRLY_FAILURE_POLICY` from earlier versions is rejected with an error pointing at `FAIRLY_FAILURE_MODE`.
+- **Image.** `docker build .` produces a multi-stage image that contains only production dependencies and the compiled output. It runs as the unprivileged `node` user and defines a `HEALTHCHECK` against `/healthz`.
+- **Shutdown.** The process handles SIGTERM and SIGINT. In-flight requests get `FAIRLY_SHUTDOWN_TIMEOUT_MS` (10 seconds) to finish; if they do not, or a second signal arrives, connections are closed and the exit code is 1. Give the orchestrator a stop grace period longer than that timeout plus `REDIS_COMMAND_TIMEOUT_MS` (the Compose file uses 20 seconds).
+- **Health.** `/healthz` returns 200 only when Redis answers within the timeout. Use it for liveness or readiness according to whether you want instances restarted or only removed from rotation during a Redis outage; in `fail-open` mode an instance keeps serving while `/healthz` is red.
+- **Redis.** Use a Redis with persistence appropriate to how much limiter state you can afford to lose; policies are stored there too. One Redis instance is supported.
+- **Dependencies.** `pnpm audit` reports no known vulnerabilities at the time of writing; CI does not enforce this.
 
-## Running
+## Development
 
 ```
 pnpm install
-pnpm build
-pnpm start                                   # needs Redis at REDIS_URL
-docker compose up                            # service plus Redis on :8080
-```
-
-## Tests
-
-```
 pnpm lint
 pnpm typecheck
 pnpm test
 ```
 
-Tests start a real Redis with Testcontainers, so Docker must be running. They cover each algorithm (limits, remaining count, window and refill behavior with an injected clock, boundary bursts, clock moving backwards), configuration validation, policy resolution and precedence, the admin API including authentication and propagation between instances, the header contract for allowed and denied responses, Redis failure handling (container stopped and container paused, in both failure modes), and concurrency: 500 concurrent HTTP requests against a limit of 100 must allow exactly 100, for every algorithm, against one server and against two servers sharing a Redis.
+Tests start a real Redis with Testcontainers, so Docker must be running. They cover each algorithm (limits, remaining count, window and refill behavior with an injected clock, boundary bursts, clock moving backwards), configuration validation, policy resolution and precedence, the admin API including authentication and propagation between instances, the header contract for allowed and denied responses, Redis failure handling (container stopped and container paused, in both failure modes), graceful shutdown of the built service with a request in flight, the OpenAPI document against the running service, and concurrency: 500 concurrent HTTP requests against a limit of 100 must allow exactly 100, for every algorithm, against one server and against two servers sharing a Redis. The shutdown tests send real signals, so they are skipped on Windows.
 
-## Benchmarks
-
-`scripts/benchmark.mjs` runs all four algorithms under identical load (same requests, concurrency, key sequence and Redis) at 1, 16, 64 and 256 concurrent lanes, in-process against Redis and through the HTTP API, and measures throughput, p50/p95/p99 latency, Redis CPU and bytes of Redis memory per tracked key. Full tables, method, caveats and the analysis are in [`docs/benchmarks.md`](docs/benchmarks.md). On a 4 vCPU machine shared by Redis, the service and the load generator:
-
-| Concurrency 64 | Engine req/s | Engine p99 | HTTP req/s | HTTP p99 | Bytes per key at limit 100 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| fixed-window | 87,777 | 1.96 ms | 14,572 | 10.58 ms | 80 |
-| sliding-window-log | 67,700 | 2.19 ms | 14,841 | 9.51 ms | 5,192 |
-| sliding-window-counter | 82,790 | 1.96 ms | 14,896 | 10.84 ms | 80 |
-| token-bucket | 75,716 | 2.22 ms | 15,290 | 9.47 ms | 104 |
-
-Why these numbers matter: all four algorithms enforce the same limit exactly under concurrency, so the choice between them is a choice about cost and behavior, and the numbers say what each costs. The sliding window log is the most precise and the most expensive: about 15 to 25 percent fewer checks per second out of Redis than fixed window, and memory that grows with the limit (5 KB per key at a limit of 100, 1.3 MB at 10,000, against a constant 80 bytes for fixed window). Fixed window and the sliding window counter are the cheapest. Token bucket costs a small constant per key and is the only one that lets a client burst and then refills it at a steady rate (it admitted 55 percent of requests in a test where the others admitted 50). Through HTTP the four are within noise of each other, because the Node process, not Redis, is the limit there; script cost matters once several service instances share one Redis. Treat the absolute figures as one machine's, and the ratios as the finding.
+[GitHub Actions](.github/workflows/ci.yml) runs install, lint, typecheck, build and the test suite on every push and pull request, plus a job that builds the Docker image, starts the Compose stack and calls the service.
 
 ## Race demo
 
@@ -208,3 +267,7 @@ node scripts/demo-race.mjs [fixed-window|sliding-window-log|sliding-window-count
 ```
 
 Starts the compose stack, fires 1000 concurrent requests from 8 worker threads at a route with a limit of 1000, then 1000 more, and prints allowed and rejected counts. Expected: 1000 allowed in the first wave, 0 in the second, 0 over the limit.
+
+## License
+
+[MIT](LICENSE)

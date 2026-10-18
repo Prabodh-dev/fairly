@@ -99,11 +99,20 @@ export class RedisStore implements ScriptRunner {
     await this.withTimeout('ping', () => this.redis.ping());
   }
 
+  abort(): void {
+    this.redis.disconnect();
+  }
+
   async close(): Promise<void> {
-    if (this.redis.status === 'ready') {
-      await this.redis.quit();
-    } else {
+    if (this.redis.status !== 'ready') {
       this.redis.disconnect();
+      return;
+    }
+    try {
+      await this.withTimeout('quit', () => this.redis.quit());
+    } catch (err) {
+      this.redis.disconnect();
+      throw err;
     }
   }
 }

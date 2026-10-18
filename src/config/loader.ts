@@ -96,6 +96,7 @@ export function loadSettings(env: NodeJS.ProcessEnv): Settings {
       'FAIRLY_FAIL_CLOSED_RETRY_AFTER_SECONDS',
       env['FAIRLY_FAIL_CLOSED_RETRY_AFTER_SECONDS'] ?? '1',
     ),
+    shutdownTimeoutMs: parsePositiveInt('FAIRLY_SHUTDOWN_TIMEOUT_MS', env['FAIRLY_SHUTDOWN_TIMEOUT_MS'] ?? '10000'),
     adminToken: parseAdminToken(env['FAIRLY_ADMIN_TOKEN']),
   };
 }

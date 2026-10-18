@@ -23,15 +23,15 @@ const LISTEN_BACKLOG = 1024;
 const MAX_CLIENT_SOCKETS = 100;
 const READY_TIMEOUT_MS = 10_000;
 
-const agents = new Map<string, http.Agent>();
+const pools = new Map<string, http.Agent>();
 
-function agentFor(baseUrl: string): http.Agent {
-  let agent = agents.get(baseUrl);
-  if (agent === undefined) {
-    agent = new http.Agent({ keepAlive: true, maxSockets: MAX_CLIENT_SOCKETS });
-    agents.set(baseUrl, agent);
+function poolFor(baseUrl: string): http.Agent {
+  let pool = pools.get(baseUrl);
+  if (pool === undefined) {
+    pool = new http.Agent({ keepAlive: true, maxSockets: MAX_CLIENT_SOCKETS });
+    pools.set(baseUrl, pool);
   }
-  return agent;
+  return pool;
 }
 
 async function waitUntilAccepting(baseUrl: string): Promise<void> {
@@ -101,8 +101,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     store,
     policies,
     close: async () => {
-      agents.get(url)?.destroy();
-      agents.delete(url);
+      pools.get(url)?.destroy();
+      pools.delete(url);
       policies.stop();
       await app.close();
       await store.close();
@@ -123,7 +123,7 @@ export function post(baseUrl: string, payload: unknown): Promise<CheckResponse> 
       `${baseUrl}/v1/check`,
       {
         method: 'POST',
-        agent: agentFor(baseUrl),
+        agent: poolFor(baseUrl),
         headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
       },
       (response) => {

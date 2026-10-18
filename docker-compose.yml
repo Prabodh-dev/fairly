@@ -15,13 +15,14 @@ services:
         condition: service_healthy
     environment:
       REDIS_URL: redis://redis:6379
-      FAIRLY_FAILURE_MODE: fail-open
       FAIRLY_CONFIG: /app/fairly.config.json
-      LOG_LEVEL: warn
+      FAIRLY_FAILURE_MODE: ${FAIRLY_FAILURE_MODE:-fail-open}
+      FAIRLY_FAIL_CLOSED_RETRY_AFTER_SECONDS: ${FAIRLY_FAIL_CLOSED_RETRY_AFTER_SECONDS:-1}
+      FAIRLY_ADMIN_TOKEN: ${FAIRLY_ADMIN_TOKEN:-}
+      FAIRLY_SHUTDOWN_TIMEOUT_MS: ${FAIRLY_SHUTDOWN_TIMEOUT_MS:-10000}
+      REDIS_COMMAND_TIMEOUT_MS: ${REDIS_COMMAND_TIMEOUT_MS:-1000}
+      POLICY_REFRESH_MS: ${POLICY_REFRESH_MS:-2000}
+      LOG_LEVEL: ${LOG_LEVEL:-warn}
+    stop_grace_period: 20s
     ports:
       - "8080:8080"
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
-      interval: 2s
-      timeout: 3s
-      retries: 15

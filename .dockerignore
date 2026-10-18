@@ -1,5 +1,8 @@
 node_modules
 dist
 .git
+.github
+.env
 test
 docs
+*.md

@@ -137,6 +137,12 @@ describe('settings', () => {
     expect(() => loadSettings({ REDIS_COMMAND_TIMEOUT_MS: '-5' })).toThrow(/REDIS_COMMAND_TIMEOUT_MS must be a positive integer/);
   });
 
+  it('defaults the shutdown timeout to 10 seconds and rejects a non-positive value', () => {
+    expect(loadSettings({}).shutdownTimeoutMs).toBe(10_000);
+    expect(loadSettings({ FAIRLY_SHUTDOWN_TIMEOUT_MS: '2500' }).shutdownTimeoutMs).toBe(2500);
+    expect(() => loadSettings({ FAIRLY_SHUTDOWN_TIMEOUT_MS: '0' })).toThrow(/FAIRLY_SHUTDOWN_TIMEOUT_MS must be a positive integer/);
+  });
+
   it('requires an admin token of at least 16 characters when one is set', () => {
     expect(loadSettings({}).adminToken).toBeUndefined();
     expect(() => loadSettings({ FAIRLY_ADMIN_TOKEN: 'short' })).toThrow(/at least 16 characters/);

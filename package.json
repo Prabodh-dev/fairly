@@ -2,13 +2,14 @@
   "name": "fairly",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@10.28.1",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && cp -r src/algorithms/lua dist/algorithms/lua && cp -r src/policy/lua dist/policy/lua",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
     "start": "node dist/main.js",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
