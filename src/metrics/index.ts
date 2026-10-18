@@ -2,7 +2,7 @@ import { Counter, Histogram, Registry } from 'prom-client';
 
 export interface Metrics {
   registry: Registry;
-  decisions: Counter<'route' | 'algorithm' | 'decision'>;
+  decisions: Counter<'policy' | 'algorithm' | 'decision'>;
   storeErrors: Counter<'algorithm' | 'policy'>;
   checkDuration: Histogram<'algorithm'>;
 }
@@ -11,8 +11,8 @@ export function createMetrics(): Metrics {
   const registry = new Registry();
   const decisions = new Counter({
     name: 'fairly_decisions_total',
-    help: 'Rate limit decisions by route, algorithm and outcome',
-    labelNames: ['route', 'algorithm', 'decision'] as const,
+    help: 'Rate limit decisions by policy, algorithm and outcome',
+    labelNames: ['policy', 'algorithm', 'decision'] as const,
     registers: [registry],
   });
   const storeErrors = new Counter({

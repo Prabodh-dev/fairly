@@ -9,7 +9,7 @@ export const ALGORITHM_NAMES = [
 
 export type AlgorithmName = (typeof ALGORITHM_NAMES)[number];
 
-export const routeLimitSchema = z.object({
+export const limitSchema = z.object({
   algorithm: z.enum(ALGORITHM_NAMES, {
     error: `algorithm must be one of: ${ALGORITHM_NAMES.join(', ')}`,
   }),
@@ -20,18 +20,35 @@ export const routeLimitSchema = z.object({
     .positive('windowSeconds must be positive'),
 });
 
-export type RouteLimit = z.infer<typeof routeLimitSchema>;
+export type LimitSpec = z.infer<typeof limitSchema>;
 
-const ROUTE_NAME_PATTERN = /^[A-Za-z0-9_.-]+$/;
+const NAME_PATTERN = /^[A-Za-z0-9_.-]+$/;
+
+export const policyDefinitionSchema = limitSchema.extend({
+  route: z.string().min(1, 'route must not be empty').max(256, 'route must be at most 256 characters').default('*'),
+  tier: z
+    .string()
+    .regex(NAME_PATTERN, 'tier may contain only letters, digits, underscore, dot and hyphen')
+    .max(64, 'tier must be at most 64 characters')
+    .optional(),
+});
+
+export type PolicyDefinition = z.infer<typeof policyDefinitionSchema>;
+
+export const policyNameSchema = z
+  .string()
+  .regex(NAME_PATTERN, 'name may contain only letters, digits, underscore, dot and hyphen')
+  .max(64, 'name must be at most 64 characters');
+
+export const policySchema = policyDefinitionSchema.extend({ name: policyNameSchema });
+
+export type Policy = z.infer<typeof policySchema>;
 
 export const limitsConfigSchema = z.object({
-  routes: z
-    .record(z.string(), routeLimitSchema)
-    .refine((routes) => Object.keys(routes).length > 0, 'at least one route must be defined')
-    .refine(
-      (routes) => Object.keys(routes).every((name) => ROUTE_NAME_PATTERN.test(name)),
-      'route names may contain only letters, digits, underscore, dot and hyphen',
-    ),
+  policies: z.array(policySchema).refine(
+    (policies) => new Set(policies.map((policy) => policy.name)).size === policies.length,
+    'policy names must be unique',
+  ),
 });
 
 export type LimitsConfig = z.infer<typeof limitsConfigSchema>;
@@ -46,4 +63,6 @@ export interface Settings {
   configPath: string;
   failurePolicy: FailurePolicy;
   logLevel: string;
+  policyRefreshMs: number;
+  adminToken: string | undefined;
 }

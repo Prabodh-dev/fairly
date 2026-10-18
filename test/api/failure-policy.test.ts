@@ -1,11 +1,9 @@
 import { GenericContainer, Wait } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { LimitsConfig } from '../../src/config/types.js';
+import type { Policy } from '../../src/config/types.js';
 import { postCheck, startServer, type RunningServer } from '../server.js';
 
-const limits: LimitsConfig = {
-  routes: { r: { algorithm: 'fixed-window', limit: 1, windowSeconds: 3600 } },
-};
+const policies: Policy[] = [{ name: 'r', route: 'r', algorithm: 'fixed-window', limit: 1, windowSeconds: 3600 }];
 
 describe('store failure policy', () => {
   let container: Awaited<ReturnType<GenericContainer['start']>>;
@@ -18,8 +16,8 @@ describe('store failure policy', () => {
       .withWaitStrategy(Wait.forLogMessage('Ready to accept connections'))
       .start();
     const url = `redis://${container.getHost()}:${container.getMappedPort(6379)}`;
-    open = await startServer(url, limits, 'open');
-    closed = await startServer(url, limits, 'closed');
+    open = await startServer({ redisUrl: url, policies, failurePolicy: 'open' });
+    closed = await startServer({ redisUrl: url, policies, failurePolicy: 'closed' });
   });
 
   afterAll(async () => {

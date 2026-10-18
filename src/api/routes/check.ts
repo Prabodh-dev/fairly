@@ -1,20 +1,27 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Algorithm } from '../../algorithms/types.js';
-import { ALGORITHM_NAMES, routeLimitSchema, type AlgorithmName, type FailurePolicy, type LimitsConfig, type RouteLimit } from '../../config/types.js';
+import { ALGORITHM_NAMES, limitSchema, type AlgorithmName, type FailurePolicy, type LimitSpec } from '../../config/types.js';
 import type { Metrics } from '../../metrics/index.js';
+import type { PolicyStore } from '../../policy/store.js';
 
 const keySchema = z.string().min(1).max(256);
 
 const checkBodySchema = z.union([
-  z.object({ key: keySchema, route: z.string().min(1).max(128) }).strict(),
-  z.object({ key: keySchema }).extend(routeLimitSchema.shape).strict(),
+  z
+    .object({
+      key: keySchema,
+      route: z.string().min(1).max(256),
+      tier: z.string().min(1).max(64).optional(),
+    })
+    .strict(),
+  z.object({ key: keySchema }).extend(limitSchema.shape).strict(),
 ]);
 
-const INLINE_ROUTE = 'inline';
+const INLINE_POLICY = 'inline';
 
 export interface CheckRouteDeps {
-  limits: LimitsConfig;
+  policies: PolicyStore;
   algorithms: Record<AlgorithmName, Algorithm>;
   failurePolicy: FailurePolicy;
   metrics: Metrics;
@@ -27,27 +34,25 @@ export function registerCheckRoute(app: FastifyInstance, deps: CheckRouteDeps): 
       return reply.code(400).send({
         error: 'invalid_request',
         details: body.error.issues.map((issue) => issue.message),
-        hint: `send { key, route } for a configured route, or { key, algorithm, limit, windowSeconds } with algorithm one of: ${ALGORITHM_NAMES.join(', ')}`,
+        hint: `send { key, route, tier? } to use a named policy, or { key, algorithm, limit, windowSeconds } with algorithm one of: ${ALGORITHM_NAMES.join(', ')}`,
       });
     }
 
-    let routeName: string;
-    let routeLimit: RouteLimit;
-    let limitKey: string;
+    let policyName: string;
+    let routeLimit: LimitSpec;
     if ('route' in body.data) {
-      const configured = deps.limits.routes[body.data.route];
-      if (configured === undefined) {
-        return reply.code(404).send({ error: 'unknown_route', route: body.data.route });
+      const policy = deps.policies.resolve(body.data.route, body.data.tier);
+      if (policy === undefined) {
+        return reply.code(404).send({ error: 'no_matching_policy', route: body.data.route, tier: body.data.tier ?? null });
       }
-      routeName = body.data.route;
-      routeLimit = configured;
-      limitKey = `${routeName}:${body.data.key}`;
+      policyName = policy.name;
+      routeLimit = { algorithm: policy.algorithm, limit: policy.limit, windowSeconds: policy.windowSeconds };
     } else {
-      routeName = INLINE_ROUTE;
+      policyName = INLINE_POLICY;
       routeLimit = { algorithm: body.data.algorithm, limit: body.data.limit, windowSeconds: body.data.windowSeconds };
-      limitKey = `${INLINE_ROUTE}:${body.data.key}`;
     }
     const key = body.data.key;
+    const limitKey = `${policyName}:${key}`;
 
     const algorithm = deps.algorithms[routeLimit.algorithm];
     const stopTimer = deps.metrics.checkDuration.startTimer({ algorithm: routeLimit.algorithm });
@@ -60,7 +65,7 @@ export function registerCheckRoute(app: FastifyInstance, deps: CheckRouteDeps): 
       const allowed = deps.failurePolicy === 'open';
       deps.metrics.storeErrors.inc({ algorithm: routeLimit.algorithm, policy: deps.failurePolicy });
       request.log.error(
-        { err, key, route: routeName, algorithm: routeLimit.algorithm, failurePolicy: deps.failurePolicy, decision: allowed ? 'allowed' : 'rejected' },
+        { err, key, policy: policyName, algorithm: routeLimit.algorithm, failurePolicy: deps.failurePolicy, decision: allowed ? 'allowed' : 'rejected' },
         'rate limit store unavailable, applying failure policy',
       );
       if (allowed) {
@@ -71,9 +76,9 @@ export function registerCheckRoute(app: FastifyInstance, deps: CheckRouteDeps): 
     stopTimer();
 
     const decision = result.allowed ? 'allowed' : 'rejected';
-    deps.metrics.decisions.inc({ route: routeName, algorithm: routeLimit.algorithm, decision });
+    deps.metrics.decisions.inc({ policy: policyName, algorithm: routeLimit.algorithm, decision });
     request.log.info(
-      { key, route: routeName, algorithm: routeLimit.algorithm, decision, remaining: result.remaining },
+      { key, policy: policyName, algorithm: routeLimit.algorithm, decision, remaining: result.remaining },
       'rate limit decision',
     );
 
@@ -82,7 +87,7 @@ export function registerCheckRoute(app: FastifyInstance, deps: CheckRouteDeps): 
       .header('X-RateLimit-Remaining', result.remaining)
       .header('X-RateLimit-Reset', Math.ceil(result.resetAtMs / 1000));
 
-    const payload = { allowed: result.allowed, remaining: result.remaining, resetAtMs: result.resetAtMs };
+    const payload = { allowed: result.allowed, remaining: result.remaining, resetAtMs: result.resetAtMs, policy: policyName };
     if (!result.allowed) {
       return reply
         .code(429)

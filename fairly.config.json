@@ -1,12 +1,13 @@
 {
-  "routes": {
-    "api-default": { "algorithm": "sliding-window-counter", "limit": 100, "windowSeconds": 60 },
-    "login": { "algorithm": "sliding-window-log", "limit": 5, "windowSeconds": 300 },
-    "uploads": { "algorithm": "token-bucket", "limit": 20, "windowSeconds": 60 },
-    "search": { "algorithm": "fixed-window", "limit": 30, "windowSeconds": 10 },
-    "demo-fixed-window": { "algorithm": "fixed-window", "limit": 1000, "windowSeconds": 86400 },
-    "demo-sliding-window-log": { "algorithm": "sliding-window-log", "limit": 1000, "windowSeconds": 86400 },
-    "demo-sliding-window-counter": { "algorithm": "sliding-window-counter", "limit": 1000, "windowSeconds": 86400 },
-    "demo-token-bucket": { "algorithm": "token-bucket", "limit": 1000, "windowSeconds": 86400 }
-  }
+  "policies": [
+    { "name": "default", "route": "*", "algorithm": "sliding-window-counter", "limit": 100, "windowSeconds": 60 },
+    { "name": "default-premium", "route": "*", "tier": "premium", "algorithm": "sliding-window-counter", "limit": 1000, "windowSeconds": 60 },
+    { "name": "login", "route": "/login", "algorithm": "sliding-window-log", "limit": 5, "windowSeconds": 300 },
+    { "name": "uploads", "route": "/uploads/*", "algorithm": "token-bucket", "limit": 20, "windowSeconds": 60 },
+    { "name": "search", "route": "/search", "algorithm": "fixed-window", "limit": 30, "windowSeconds": 10 },
+    { "name": "demo-fixed-window", "route": "demo-fixed-window", "algorithm": "fixed-window", "limit": 1000, "windowSeconds": 86400 },
+    { "name": "demo-sliding-window-log", "route": "demo-sliding-window-log", "algorithm": "sliding-window-log", "limit": 1000, "windowSeconds": 86400 },
+    { "name": "demo-sliding-window-counter", "route": "demo-sliding-window-counter", "algorithm": "sliding-window-counter", "limit": 1000, "windowSeconds": 86400 },
+    { "name": "demo-token-bucket", "route": "demo-token-bucket", "algorithm": "token-bucket", "limit": 1000, "windowSeconds": 86400 }
+  ]
 }

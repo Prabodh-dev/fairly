@@ -4,32 +4,48 @@ import pino from 'pino';
 import { createAlgorithms } from '../src/algorithms/index.js';
 import type { Clock } from '../src/algorithms/types.js';
 import { buildServer } from '../src/api/server.js';
-import type { FailurePolicy, LimitsConfig } from '../src/config/types.js';
+import type { FailurePolicy, Policy } from '../src/config/types.js';
 import { createMetrics } from '../src/metrics/index.js';
+import { PolicyStore } from '../src/policy/store.js';
 import type { RedisStore } from '../src/store/redis.js';
-import { connectStore } from './helpers.js';
+import { connectStore, uniqueKey } from './helpers.js';
 
 export interface RunningServer {
   url: string;
   app: FastifyInstance;
   store: RedisStore;
+  policies: PolicyStore;
   close(): Promise<void>;
 }
 
-export async function startServer(
-  redisUrl: string,
-  limits: LimitsConfig,
-  failurePolicy: FailurePolicy = 'closed',
-  clock?: Clock,
-): Promise<RunningServer> {
-  const store = await connectStore(redisUrl);
+export interface StartOptions {
+  redisUrl: string;
+  policies: Policy[];
+  failurePolicy?: FailurePolicy;
+  clock?: Clock;
+  policyPrefix?: string;
+  policyRefreshMs?: number;
+}
+
+export async function startServer(options: StartOptions): Promise<RunningServer> {
+  const store = await connectStore(options.redisUrl);
+  const logger = pino({ level: 'silent' });
+  const policies = new PolicyStore({
+    store,
+    logger,
+    seed: options.policies,
+    refreshMs: options.policyRefreshMs ?? 60_000,
+    keyPrefix: options.policyPrefix ?? uniqueKey('policies'),
+  });
+  await policies.refresh();
+  if (options.policyRefreshMs !== undefined) policies.start();
   const app = buildServer({
     store,
-    limits,
-    algorithms: createAlgorithms(clock === undefined ? { store } : { store, clock }),
-    failurePolicy,
+    policies,
+    algorithms: createAlgorithms(options.clock === undefined ? { store } : { store, clock: options.clock }),
+    failurePolicy: options.failurePolicy ?? 'closed',
     metrics: createMetrics(),
-    logger: pino({ level: 'silent' }),
+    logger,
   });
   await app.listen({ port: 0, host: '127.0.0.1' });
   const address = app.server.address() as AddressInfo;
@@ -37,7 +53,9 @@ export async function startServer(
     url: `http://127.0.0.1:${address.port}`,
     app,
     store,
+    policies,
     close: async () => {
+      policies.stop();
       await app.close();
       await store.close();
     },

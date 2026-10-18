@@ -52,6 +52,16 @@ function parseFailurePolicy(value: string | undefined): FailurePolicy {
   return value;
 }
 
+function parseAdminToken(value: string | undefined): string | undefined {
+  if (value === undefined || value === '') {
+    return undefined;
+  }
+  if (value.length < 16) {
+    throw new ConfigError('FAIRLY_ADMIN_TOKEN must be at least 16 characters');
+  }
+  return value;
+}
+
 export function loadSettings(env: NodeJS.ProcessEnv): Settings {
   return {
     port: parsePositiveInt('PORT', env['PORT'] ?? '8080'),
@@ -61,5 +71,7 @@ export function loadSettings(env: NodeJS.ProcessEnv): Settings {
     configPath: env['FAIRLY_CONFIG'] ?? 'fairly.config.json',
     failurePolicy: parseFailurePolicy(env['FAIRLY_FAILURE_POLICY']),
     logLevel: env['LOG_LEVEL'] ?? 'info',
+    policyRefreshMs: parsePositiveInt('POLICY_REFRESH_MS', env['POLICY_REFRESH_MS'] ?? '2000'),
+    adminToken: parseAdminToken(env['FAIRLY_ADMIN_TOKEN']),
   };
 }

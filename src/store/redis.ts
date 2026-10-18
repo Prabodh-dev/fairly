@@ -48,6 +48,10 @@ export class RedisStore implements ScriptRunner {
     }
   }
 
+  run<T>(operation: (redis: Redis) => Promise<T>): Promise<T> {
+    return operation(this.redis);
+  }
+
   async execute(script: LuaScript, keys: string[], args: ScriptArg[]): Promise<unknown> {
     try {
       return await this.redis.evalsha(script.sha, keys.length, ...keys, ...args);
