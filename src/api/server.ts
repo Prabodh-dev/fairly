@@ -33,6 +33,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     deps.metrics.httpDuration.observe({ method: request.method, route }, reply.elapsedTime / 1000);
     done();
   });
+  app.addHook('onSend', (_request, reply, _payload, done) => {
+    if (!app.server.listening) {
+      void reply.header('connection', 'close');
+    }
+    done();
+  });
   registerCheckRoute(app, {
     policies: deps.policies,
     algorithms: deps.algorithms,

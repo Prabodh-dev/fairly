@@ -67,5 +67,6 @@ export interface Settings {
   logLevel: string;
   policyRefreshMs: number;
   failClosedRetryAfterSeconds: number;
+  shutdownTimeoutMs: number;
   adminToken: string | undefined;
 }
