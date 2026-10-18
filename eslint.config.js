@@ -22,7 +22,7 @@ export default tseslint.config(
     ...tseslint.configs.disableTypeChecked,
     languageOptions: {
       parserOptions: { projectService: false },
-      globals: { console: 'readonly', process: 'readonly', Buffer: 'readonly', URL: 'readonly' },
+      globals: { console: 'readonly', process: 'readonly', Buffer: 'readonly', URL: 'readonly', performance: 'readonly', fetch: 'readonly', setTimeout: 'readonly' },
     },
     rules: {
       ...tseslint.configs.disableTypeChecked.rules,
