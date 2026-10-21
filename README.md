@@ -3,15 +3,42 @@
 [![CI](https://github.com/Prabodh-dev/fairly/actions/workflows/ci.yml/badge.svg)](https://github.com/Prabodh-dev/fairly/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-fairly is a distributed rate limiter and API quota service. It answers one question, correctly under heavy concurrency: has this key exceeded its quota right now.
+**fairly is a rate limiting service.** Your backend asks it over HTTP whether a key (a user, an API key, an IP address) may make another request right now, and it answers allow or deny with standard `X-RateLimit-*` and `Retry-After` headers. Limits are named policies that you can change while it runs, state lives in Redis so many instances share it, and every decision is atomic: with 500 concurrent requests against a limit of 100, exactly 100 get through.
 
-It exists to make the trade-offs between rate limiting algorithms concrete. Fixed window, sliding window log, sliding window counter and token bucket are all implemented behind one interface, each as a single atomic Redis script, so the same load can be pointed at each and the cost and behavior compared with real numbers (see [Benchmarks](#benchmarks)). Around the algorithms is the rest of what a service needs to be run: named policies you can change at runtime, standard rate limit headers, a predictable failure mode for when Redis is down, metrics, an OpenAPI spec and graceful shutdown.
+![Terminal recording: docker compose up, six requests to a rate-limited route with the X-RateLimit headers counting down to a 429 with Retry-After, then the limit raised live through the admin API](docs/demo.svg)
 
-fairly is the admission-control part of a set of three backend projects that follow a request through its lifecycle: **fairly admits** a request, **steadily routes** it, and **durably executes** it. This repository is the first stage, deciding whether a request gets in at all.
+<sub>Real output, recorded with [`scripts/record-demo.sh`](scripts/record-demo.sh): the stack starting with `docker compose up`, the `X-RateLimit-Remaining` header counting down to a `429` with `Retry-After`, and a policy changed through the admin API with no restart. Replay the raw recording with `asciinema play docs/demo.cast`.</sub>
 
-## Quickstart
+## Why it exists
 
-### With Docker Compose
+Most rate limiters pick one algorithm and hide the trade-offs. fairly implements four behind one interface (fixed window, sliding window log, sliding window counter and token bucket), each as a single atomic Redis script, so you can point the same load at each and see what it costs in throughput, latency and memory (see [Benchmarks](#benchmarks)). Around the algorithms is what a service needs to be run for real: runtime policy changes, a predictable failure mode for when Redis is down, Prometheus metrics, an OpenAPI spec, graceful shutdown and a multi-arch container image.
+
+It is also the admission-control part of a set of three backend projects that follow a request through its lifecycle: **fairly admits** a request, **steadily routes** it, and **durably executes** it. This repository is the first stage, deciding whether a request gets in at all. It does not depend on the other two and is useful on its own.
+
+## Install
+
+### Docker image
+
+Release images for `linux/amd64` and `linux/arm64` are published to GitHub Container Registry for every version tag:
+
+```
+docker pull ghcr.io/prabodh-dev/fairly:latest
+```
+
+fairly needs a Redis to talk to. To try it with a throwaway one:
+
+```
+docker network create fairly
+docker run -d --name redis --network fairly redis:7-alpine
+docker run -d --name fairly --network fairly -p 8080:8080 \
+  -e REDIS_URL=redis://redis:6379 \
+  -e FAIRLY_ADMIN_TOKEN=$(openssl rand -hex 16) \
+  ghcr.io/prabodh-dev/fairly:latest
+```
+
+Every setting is an environment variable; see [docs/configuration.md](docs/configuration.md). Run it behind TLS in production and read [SECURITY.md](SECURITY.md) first.
+
+### Docker Compose
 
 ```
 git clone https://github.com/Prabodh-dev/fairly.git
@@ -19,11 +46,11 @@ cd fairly
 docker compose up --build
 ```
 
-This builds the image and starts the service on port 8080 next to a Redis, with the service waiting for Redis to be healthy first. `docker compose ps` shows the service as healthy once its `HEALTHCHECK` passes.
+This builds the image and starts the service on port 8080 next to a Redis, with the service waiting for Redis to be healthy first. `docker compose ps` shows the service as healthy once its `HEALTHCHECK` passes. Copy `.env.example` to `.env` to change settings.
 
 ### From source
 
-You need Node 22 (20 or later works), pnpm, and a Redis 7 to talk to. The repository pins its pnpm version, so `corepack enable` is enough to get the right one.
+You need Node 22 (20 or later works), pnpm, and a Redis 7. The repository pins its pnpm version, so `corepack enable` is enough to get the right one.
 
 ```
 git clone https://github.com/Prabodh-dev/fairly.git
@@ -35,7 +62,7 @@ pnpm build
 pnpm start
 ```
 
-### Try it
+## Quickstart
 
 The shipped policies limit `/login` to 5 requests per 5 minutes per key. Send six:
 
@@ -47,7 +74,15 @@ for i in 1 2 3 4 5 6; do
 done
 ```
 
-The first five return `200` with a falling `X-RateLimit-Remaining`; the sixth returns `429` with `Retry-After`. Then open <http://localhost:8080/docs> for the interactive API documentation, <http://localhost:8080/metrics> for Prometheus metrics, and see [Admin API](#admin-api) to change limits while it runs.
+The first five return `200` with a falling `X-RateLimit-Remaining`; the sixth returns `429` with `Retry-After`. Then:
+
+- open <http://localhost:8080/docs> for the interactive API documentation,
+- open <http://localhost:8080/metrics> for Prometheus metrics,
+- see [Admin API](#admin-api) to change limits while the service runs (set `FAIRLY_ADMIN_TOKEN` first).
+
+## Contributing
+
+Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers building and testing locally, branch and commit conventions, what a good pull request looks like, and a map of the code; issues labelled [good first issue](https://github.com/Prabodh-dev/fairly/labels/good%20first%20issue) are a good place to start. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md), and report security problems privately as described in [SECURITY.md](SECURITY.md).
 
 ## Benchmarks
 
@@ -84,6 +119,8 @@ clients ──> fairly instance(s) ──> Redis
 | [docs/configuration.md](docs/configuration.md) | Every environment variable, with defaults and effects |
 | [openapi.yaml](openapi.yaml) | API contract, also served at `/docs` |
 | [docs/grafana-dashboard.json](docs/grafana-dashboard.json) | Importable Grafana dashboard for the metrics |
+| [SECURITY.md](SECURITY.md) | Threat model, deployment expectations, how to report a vulnerability |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Local setup, conventions, code map |
 
 ## Algorithms
 
@@ -241,13 +278,16 @@ All settings are environment variables, plus one JSON file of seed policies. [do
 
 ## Running in production
 
-- **Image.** `docker build .` produces a multi-stage image that contains only production dependencies and the compiled output. It runs as the unprivileged `node` user and defines a `HEALTHCHECK` against `/healthz`.
+- **Image.** Release images come from `ghcr.io/prabodh-dev/fairly`; `docker build .` produces the same multi-stage image that contains only production dependencies and the compiled output. It runs as the unprivileged `node` user and defines a `HEALTHCHECK` against `/healthz`.
 - **Shutdown.** The process handles SIGTERM and SIGINT. In-flight requests get `FAIRLY_SHUTDOWN_TIMEOUT_MS` (10 seconds) to finish; if they do not, or a second signal arrives, connections are closed and the exit code is 1. Give the orchestrator a stop grace period longer than that timeout plus `REDIS_COMMAND_TIMEOUT_MS` (the Compose file uses 20 seconds).
 - **Health.** `/healthz` returns 200 only when Redis answers within the timeout. Use it for liveness or readiness according to whether you want instances restarted or only removed from rotation during a Redis outage; in `fail-open` mode an instance keeps serving while `/healthz` is red.
 - **Redis.** Use a Redis with persistence appropriate to how much limiter state you can afford to lose; policies are stored there too. One Redis instance is supported.
-- **Dependencies.** `pnpm audit` reports no known vulnerabilities at the time of writing; CI does not enforce this.
+- **TLS.** fairly does not terminate TLS. Put it behind a proxy or ingress that does, keep the check endpoint on a private network, and restrict `/v1/admin`. [SECURITY.md](SECURITY.md) has the full list.
+- **Dependencies.** CI runs `pnpm audit` on every push and pull request and weekly, and fails on any advisory in production dependencies.
 
 ## Development
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 
 ```
 pnpm install
@@ -258,7 +298,7 @@ pnpm test
 
 Tests start a real Redis with Testcontainers, so Docker must be running. They cover each algorithm (limits, remaining count, window and refill behavior with an injected clock, boundary bursts, clock moving backwards), configuration validation, policy resolution and precedence, the admin API including authentication and propagation between instances, the header contract for allowed and denied responses, Redis failure handling (container stopped and container paused, in both failure modes), graceful shutdown of the built service with a request in flight, the OpenAPI document against the running service, and concurrency: 500 concurrent HTTP requests against a limit of 100 must allow exactly 100, for every algorithm, against one server and against two servers sharing a Redis. The shutdown tests send real signals, so they are skipped on Windows.
 
-[GitHub Actions](.github/workflows/ci.yml) runs install, lint, typecheck, build and the test suite on every push and pull request, plus a job that builds the Docker image, starts the Compose stack and calls the service.
+[GitHub Actions](.github/workflows/ci.yml) runs install, lint, typecheck, build and the test suite on every push and pull request; a job that builds the Docker image, starts the Compose stack and calls the service; and a dependency audit, which also runs weekly. Pushing a `v*` tag runs all of them and then publishes the multi-arch image to GHCR with the version tag and `latest`.
 
 ## Race demo
 
