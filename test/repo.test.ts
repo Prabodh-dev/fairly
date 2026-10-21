@@ -20,7 +20,7 @@ function envVariablesRead(): string[] {
 
 function parseEnvFile(text: string): Record<string, string> {
   const values: Record<string, string> = {};
-  for (const line of text.split('\n')) {
+  for (const line of text.split(/\r?\n/)) {
     const match = /^([A-Z_]+)=(.*)$/.exec(line);
     if (match !== null) values[match[1] ?? ''] = match[2] ?? '';
   }
@@ -162,7 +162,11 @@ describe('environment documentation', () => {
   });
 
   it('keeps real .env files out of git', () => {
-    expect(read('.gitignore').split('\n')).toContain('.env');
+    expect(
+      read('.gitignore')
+        .split(/\r?\n/)
+        .map((line) => line.trim()),
+    ).toContain('.env');
   });
 });
 
