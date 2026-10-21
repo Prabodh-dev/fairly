@@ -50,10 +50,68 @@ describe('CI workflow', () => {
     expect(steps).toContain('/healthz');
   });
 
+  it('audits dependencies on every push and pull request, and on a schedule', () => {
+    expect(Object.keys(workflow.on)).toContain('schedule');
+    const steps = commands('audit');
+    expect(steps).toContain('pnpm audit --prod --audit-level low');
+    expect(steps).toContain('pnpm audit --audit-level high');
+    expect((workflow.jobs['audit'] as { if?: string } | undefined)?.if).toBeUndefined();
+    for (const job of ['test', 'docker']) {
+      expect((workflow.jobs[job] as { if?: string } | undefined)?.if).toContain("!= 'schedule'");
+    }
+  });
+
   it('does not let any step fail silently', () => {
     for (const job of Object.values(workflow.jobs)) {
       for (const step of job.steps) expect(step['continue-on-error']).not.toBe(true);
     }
+  });
+});
+
+interface ReleaseStep {
+  name?: string;
+  uses?: string;
+  run?: string;
+  with?: Record<string, string | boolean>;
+  env?: Record<string, string>;
+}
+
+describe('release job', () => {
+  const workflow = parse(read('.github/workflows/ci.yml')) as {
+    jobs: Record<string, { if?: string; needs?: string[]; permissions?: Record<string, string>; steps: ReleaseStep[] }>;
+  };
+  const release = workflow.jobs['release'];
+  const step = (prefix: string): ReleaseStep | undefined => release?.steps.find((candidate) => candidate.uses?.startsWith(prefix));
+
+  it('runs only for v* tags and only after the other jobs pass', () => {
+    expect(release?.if).toBe("startsWith(github.ref, 'refs/tags/v')");
+    expect(release?.needs).toEqual(expect.arrayContaining(['test', 'docker', 'audit']));
+  });
+
+  it('can write packages and nothing else', () => {
+    expect(release?.permissions).toEqual({ contents: 'read', packages: 'write' });
+  });
+
+  it('builds for amd64 and arm64 with buildx and pushes to ghcr.io', () => {
+    expect(step('docker/setup-buildx-action')).toBeDefined();
+    expect(step('docker/setup-qemu-action')).toBeDefined();
+    expect(step('docker/login-action')?.with?.['registry']).toBe('ghcr.io');
+    const build = step('docker/build-push-action');
+    expect(build?.with?.['platforms']).toBe('linux/amd64,linux/arm64');
+    expect(build?.with?.['push']).toBe(true);
+    expect(build?.with?.['tags']).toBe('${{ steps.meta.outputs.tags }}');
+  });
+
+  it('tags the version and latest, and keeps pre-releases off latest', () => {
+    const tags = String(step('docker/metadata-action')?.with?.['tags']);
+    expect(tags).toContain('type=semver,pattern={{version}}');
+    expect(tags).toMatch(/type=raw,value=latest,enable=\$\{\{ !contains\(github\.ref_name, '-'\) \}\}/);
+  });
+
+  it('checks that the published manifest lists both platforms', () => {
+    const check = release?.steps.find((candidate) => candidate.run?.includes('imagetools inspect'));
+    expect(check?.run).toContain('linux/amd64');
+    expect(check?.run).toContain('linux/arm64');
   });
 });
 
@@ -105,6 +163,42 @@ describe('environment documentation', () => {
 
   it('keeps real .env files out of git', () => {
     expect(read('.gitignore').split('\n')).toContain('.env');
+  });
+});
+
+describe('community and security files', () => {
+  it.each(['SECURITY.md', 'CONTRIBUTING.md', 'CODE_OF_CONDUCT.md', '.github/PULL_REQUEST_TEMPLATE.md', '.github/dependabot.yml'])('has %s', (file) => {
+    expect(existsSync(root(file)), file).toBe(true);
+    expect(read(file).length).toBeGreaterThan(100);
+  });
+
+  it('has issue forms that parse and ask for the essentials', () => {
+    for (const file of ['bug_report.yml', 'feature_request.yml']) {
+      const form = parse(read(`.github/ISSUE_TEMPLATE/${file}`)) as { name: string; body: { type: string; validations?: { required?: boolean } }[] };
+      expect(form.name.length).toBeGreaterThan(0);
+      expect(form.body.some((field) => field.validations?.required === true), file).toBe(true);
+    }
+  });
+
+  it('keeps reporting contact details in step across SECURITY.md and the Code of Conduct', () => {
+    const security = read('SECURITY.md');
+    const conduct = read('CODE_OF_CONDUCT.md');
+    const email = /\*\*([^*@\s]+@[^*\s]+)\*\*/.exec(security)?.[1];
+    expect(email).toBeDefined();
+    expect(conduct).toContain(email ?? '');
+    expect(conduct).not.toContain('[INSERT CONTACT METHOD]');
+  });
+
+  it('documents the timing-safe token comparison it relies on', () => {
+    const security = read('SECURITY.md');
+    expect(security).toContain('timingSafeEqual');
+    expect(read('src/api/routes/admin.ts')).toContain('timingSafeEqual');
+  });
+
+  it('references scripts that exist', () => {
+    for (const script of ['scripts/record-demo.sh', 'scripts/demo-session.sh', 'docs/demo.svg', 'docs/demo.cast']) {
+      expect(existsSync(root(script)), script).toBe(true);
+    }
   });
 });
 

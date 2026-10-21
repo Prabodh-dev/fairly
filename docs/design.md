@@ -54,6 +54,12 @@ Resolution sorts policies once, whenever the set changes, by: exact route first,
 
 Quota state is keyed by `<policy name>:<key>`. All routes matched by one policy share one quota per key. Renaming or recreating a policy therefore starts a fresh quota; editing its limit or window keeps the existing state.
 
+Route patterns are matched with a small iterative wildcard matcher (`globMatch` in `src/policy/resolve.ts`), not a regular expression. A pattern with many `*` turned into a backtracking regular expression takes time polynomial in the route length with a degree equal to the number of stars; a request route of up to 256 characters against a 10-star pattern already took hundreds of milliseconds, so a hostile policy could have stalled the event loop. The matcher is O(pattern length x route length) in the worst case and gives the same answers as the regular expression it replaced (checked against it on thousands of random cases in the tests).
+
+### Limits on values
+
+`limit` is capped at 1,000,000,000 and `windowSeconds` at 31,536,000, and their product in milliseconds must stay within 2^53 - 1. Redis Lua numbers are doubles, so inside that bound every count, product and division the scripts do is exact. Before the bound existed, a policy near the top of the integer range made the sliding window counter script fail with a Redis "not an integer" error (which the service treats as a Redis outage, so fail-open silently allowed everything), and made the token bucket report a `remaining` that did not decrease after a request had been admitted.
+
 ### Storage and propagation
 
 Policies are stored in one Redis hash (`fairly:policies`, field = name, value = JSON definition). The config file seeds the hash only if the flag key `fairly:policies:seeded` is unset, using a single script so concurrent instance starts seed once. After seeding, Redis is authoritative.

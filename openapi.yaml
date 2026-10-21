@@ -304,6 +304,13 @@ components:
     Limit:
       type: integer
       minimum: 1
+      maximum: 1000000000
+      description: Requests allowed per window. The product of limit and windowSeconds, in milliseconds, must not exceed 9007199254740991 (2^53 - 1) so that the Redis scripts do exact integer arithmetic.
+    WindowSeconds:
+      type: integer
+      minimum: 1
+      maximum: 31536000
+      description: Window length in seconds, at most one year. See the note on Limit about the combined bound.
     CheckByPolicyRequest:
       type: object
       additionalProperties: false
@@ -328,7 +335,7 @@ components:
         key: { type: string, minLength: 1, maxLength: 256 }
         algorithm: { $ref: '#/components/schemas/Algorithm' }
         limit: { $ref: '#/components/schemas/Limit' }
-        windowSeconds: { $ref: '#/components/schemas/Limit' }
+        windowSeconds: { $ref: '#/components/schemas/WindowSeconds' }
     CheckResult:
       type: object
       required: [allowed, remaining, resetAtMs, policy]
@@ -365,7 +372,7 @@ components:
           description: Optional. The policy applies only to requests sending this tier.
         algorithm: { $ref: '#/components/schemas/Algorithm' }
         limit: { $ref: '#/components/schemas/Limit' }
-        windowSeconds: { $ref: '#/components/schemas/Limit' }
+        windowSeconds: { $ref: '#/components/schemas/WindowSeconds' }
     PolicyCreate:
       allOf:
         - $ref: '#/components/schemas/PolicyDefinition'
