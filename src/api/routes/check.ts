@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import type { Algorithm } from '../../algorithms/types.js';
-import { ALGORITHM_NAMES, limitSchema, type AlgorithmName, type FailureMode, type LimitSpec } from '../../config/types.js';
+import { ALGORITHM_NAMES, budgetIssue, limitFields, withinBudget, type AlgorithmName, type FailureMode, type LimitSpec } from '../../config/types.js';
 import type { Metrics } from '../../metrics/index.js';
 import type { PolicyStore } from '../../policy/store.js';
 
@@ -15,7 +15,7 @@ const checkBodySchema = z.union([
       tier: z.string().min(1).max(64).optional(),
     })
     .strict(),
-  z.object({ key: keySchema }).extend(limitSchema.shape).strict(),
+  z.object({ key: keySchema, ...limitFields }).strict().refine(withinBudget, budgetIssue),
 ]);
 
 const INLINE_POLICY = 'inline';

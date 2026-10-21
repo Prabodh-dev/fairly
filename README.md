@@ -137,7 +137,7 @@ A policy maps a route pattern and an optional tier to an algorithm, a limit and 
 | `route` | Exact route, or a pattern where `*` matches any run of characters (including `/`). Defaults to `*`. |
 | `tier` | Optional. The policy only applies to requests that send the same `tier`. |
 | `algorithm` | `fixed-window`, `sliding-window-log`, `sliding-window-counter` or `token-bucket`. |
-| `limit`, `windowSeconds` | Positive integers. |
+| `limit`, `windowSeconds` | Positive integers. `limit` is at most 1,000,000,000, `windowSeconds` at most 31,536,000 (one year), and `limit` x `windowSeconds` x 1000 at most 2^53 - 1 so that the scripts' arithmetic stays exact. |
 
 **Precedence.** Among policies that match the request:
 

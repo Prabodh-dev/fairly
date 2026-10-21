@@ -48,6 +48,22 @@ describe('limits config', () => {
     expect(() => parseLimitsConfig({ routes: {} })).toThrow(/policies/);
   });
 
+  it('rejects limits and windows above the supported maximum', () => {
+    expect(() => parseLimitsConfig(withPolicy({ limit: 1_000_000_001 }))).toThrow(/limit must be at most 1000000000/);
+    expect(() => parseLimitsConfig(withPolicy({ windowSeconds: 31_536_001 }))).toThrow(/windowSeconds must be at most 31536000/);
+    expect(() => parseLimitsConfig(withPolicy({ limit: Number.MAX_SAFE_INTEGER }))).toThrow(/limit must be at most/);
+    expect(parseLimitsConfig(withPolicy({ limit: 1_000_000_000, windowSeconds: 9007 })).policies).toHaveLength(1);
+    expect(parseLimitsConfig(withPolicy({ limit: 1, windowSeconds: 31_536_000 })).policies).toHaveLength(1);
+  });
+
+  it('rejects a limit and window whose product in milliseconds would lose integer precision', () => {
+    expect(() => parseLimitsConfig(withPolicy({ limit: 1_000_000_000, windowSeconds: 9008 }))).toThrow(
+      /windowSeconds: limit multiplied by windowSeconds in milliseconds must not exceed 9007199254740991/,
+    );
+    expect(() => parseLimitsConfig(withPolicy({ limit: 1_000_000, windowSeconds: 9_008_000 }))).toThrow(/must not exceed/);
+    expect(parseLimitsConfig(withPolicy({ limit: 1_000_000, windowSeconds: 9_007_199 })).policies).toHaveLength(1);
+  });
+
   it('reports unreadable and malformed files', () => {
     expect(() => loadLimitsConfig('/nonexistent/fairly.json')).toThrow(/cannot read limits config/);
     expect(() => loadLimitsConfig(new URL('../../package.json', import.meta.url))).toThrow(/invalid limits config/);
@@ -130,6 +146,32 @@ describe('settings', () => {
 
   it('refuses the old failure policy variable instead of silently ignoring it', () => {
     expect(() => loadSettings({ FAIRLY_FAILURE_POLICY: 'closed' })).toThrow(/replaced by FAIRLY_FAILURE_MODE/);
+  });
+
+  it('rejects values outside the range the runtime can honor', () => {
+    expect(loadSettings({ PORT: '65535' }).port).toBe(65535);
+    expect(() => loadSettings({ PORT: '65536' })).toThrow(/PORT must be a positive integer no greater than 65535/);
+    expect(loadSettings({ REDIS_COMMAND_TIMEOUT_MS: '2147483647' }).redisCommandTimeoutMs).toBe(2_147_483_647);
+    expect(() => loadSettings({ REDIS_COMMAND_TIMEOUT_MS: '2147483648' })).toThrow(/REDIS_COMMAND_TIMEOUT_MS must be a positive integer no greater than 2147483647/);
+    expect(() => loadSettings({ POLICY_REFRESH_MS: '99999999999' })).toThrow(/POLICY_REFRESH_MS/);
+    expect(() => loadSettings({ FAIRLY_SHUTDOWN_TIMEOUT_MS: '3000000000' })).toThrow(/FAIRLY_SHUTDOWN_TIMEOUT_MS/);
+    expect(() => loadSettings({ FAIRLY_FAIL_CLOSED_RETRY_AFTER_SECONDS: '86401' })).toThrow(/FAIRLY_FAIL_CLOSED_RETRY_AFTER_SECONDS/);
+  });
+
+  it('accepts plain decimal integers only', () => {
+    for (const value of ['0x1F90', '1e3', ' 8080', '8080 ', '+8080', '8080.0', '-1', '', 'abc', '١٢٣']) {
+      expect(() => loadSettings({ PORT: value }), JSON.stringify(value)).toThrow(/PORT must be a positive integer/);
+    }
+    expect(loadSettings({ PORT: '08080' }).port).toBe(8080);
+  });
+
+  it('validates the log level and the Redis URL instead of failing later', () => {
+    expect(loadSettings({ LOG_LEVEL: 'silent' }).logLevel).toBe('silent');
+    expect(() => loadSettings({ LOG_LEVEL: 'loud' })).toThrow(/LOG_LEVEL must be one of: fatal, error, warn, info, debug, trace, silent, got "loud"/);
+    expect(loadSettings({ REDIS_URL: 'rediss://:secret@cache.example.com:6380/2' }).redisUrl).toBe('rediss://:secret@cache.example.com:6380/2');
+    for (const value of ['garbage', 'localhost:6379', 'http://localhost:6379', 'redis', '']) {
+      expect(() => loadSettings({ REDIS_URL: value }), JSON.stringify(value)).toThrow(/REDIS_URL must be a redis:\/\/ or rediss:\/\/ URL/);
+    }
   });
 
   it('rejects a non-positive port or timeout', () => {

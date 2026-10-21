@@ -52,12 +52,37 @@ export function loadLimitsConfig(input: string | URL): LimitsConfig {
   return parseLimitsConfig(raw);
 }
 
-function parsePositiveInt(name: string, value: string): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new ConfigError(`${name} must be a positive integer, got "${value}"`);
+const MAX_TIMER_MS = 2_147_483_647;
+const MAX_PORT = 65_535;
+const MAX_RETRY_AFTER_SECONDS = 86_400;
+const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'];
+
+function parsePositiveInt(name: string, value: string, max: number): number {
+  const parsed = /^\d+$/.test(value) ? Number(value) : Number.NaN;
+  if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > max) {
+    throw new ConfigError(`${name} must be a positive integer no greater than ${max}, got "${value}"`);
   }
   return parsed;
+}
+
+function parseLogLevel(value: string): string {
+  if (!LOG_LEVELS.includes(value)) {
+    throw new ConfigError(`LOG_LEVEL must be one of: ${LOG_LEVELS.join(', ')}, got "${value}"`);
+  }
+  return value;
+}
+
+function parseRedisUrl(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new ConfigError(`REDIS_URL must be a redis:// or rediss:// URL, got "${value}"`);
+  }
+  if (url.protocol !== 'redis:' && url.protocol !== 'rediss:') {
+    throw new ConfigError(`REDIS_URL must be a redis:// or rediss:// URL, got "${value}"`);
+  }
+  return value;
 }
 
 function parseFailureMode(env: NodeJS.ProcessEnv): FailureMode {
@@ -84,19 +109,20 @@ function parseAdminToken(value: string | undefined): string | undefined {
 
 export function loadSettings(env: NodeJS.ProcessEnv): Settings {
   return {
-    port: parsePositiveInt('PORT', env['PORT'] ?? '8080'),
+    port: parsePositiveInt('PORT', env['PORT'] ?? '8080', MAX_PORT),
     host: env['HOST'] ?? '0.0.0.0',
-    redisUrl: env['REDIS_URL'] ?? 'redis://127.0.0.1:6379',
-    redisCommandTimeoutMs: parsePositiveInt('REDIS_COMMAND_TIMEOUT_MS', env['REDIS_COMMAND_TIMEOUT_MS'] ?? '1000'),
+    redisUrl: parseRedisUrl(env['REDIS_URL'] ?? 'redis://127.0.0.1:6379'),
+    redisCommandTimeoutMs: parsePositiveInt('REDIS_COMMAND_TIMEOUT_MS', env['REDIS_COMMAND_TIMEOUT_MS'] ?? '1000', MAX_TIMER_MS),
     configPath: env['FAIRLY_CONFIG'] ?? 'fairly.config.json',
     failureMode: parseFailureMode(env),
-    logLevel: env['LOG_LEVEL'] ?? 'info',
-    policyRefreshMs: parsePositiveInt('POLICY_REFRESH_MS', env['POLICY_REFRESH_MS'] ?? '2000'),
+    logLevel: parseLogLevel(env['LOG_LEVEL'] ?? 'info'),
+    policyRefreshMs: parsePositiveInt('POLICY_REFRESH_MS', env['POLICY_REFRESH_MS'] ?? '2000', MAX_TIMER_MS),
     failClosedRetryAfterSeconds: parsePositiveInt(
       'FAIRLY_FAIL_CLOSED_RETRY_AFTER_SECONDS',
       env['FAIRLY_FAIL_CLOSED_RETRY_AFTER_SECONDS'] ?? '1',
+      MAX_RETRY_AFTER_SECONDS,
     ),
-    shutdownTimeoutMs: parsePositiveInt('FAIRLY_SHUTDOWN_TIMEOUT_MS', env['FAIRLY_SHUTDOWN_TIMEOUT_MS'] ?? '10000'),
+    shutdownTimeoutMs: parsePositiveInt('FAIRLY_SHUTDOWN_TIMEOUT_MS', env['FAIRLY_SHUTDOWN_TIMEOUT_MS'] ?? '10000', MAX_TIMER_MS),
     adminToken: parseAdminToken(env['FAIRLY_ADMIN_TOKEN']),
   };
 }

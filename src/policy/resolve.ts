@@ -9,16 +9,36 @@ function literalLength(pattern: string): number {
   return pattern.replaceAll('*', '').length;
 }
 
+export function globMatch(pattern: string, text: string): boolean {
+  let patternIndex = 0;
+  let textIndex = 0;
+  let starIndex = -1;
+  let starMatchEnd = 0;
+  while (textIndex < text.length) {
+    if (patternIndex < pattern.length && pattern[patternIndex] === '*') {
+      starIndex = patternIndex;
+      patternIndex++;
+      starMatchEnd = textIndex;
+    } else if (patternIndex < pattern.length && pattern[patternIndex] === text[textIndex]) {
+      patternIndex++;
+      textIndex++;
+    } else if (starIndex !== -1) {
+      patternIndex = starIndex + 1;
+      starMatchEnd++;
+      textIndex = starMatchEnd;
+    } else {
+      return false;
+    }
+  }
+  while (patternIndex < pattern.length && pattern[patternIndex] === '*') patternIndex++;
+  return patternIndex === pattern.length;
+}
+
 function compileRoute(pattern: string): (route: string) => boolean {
   if (!pattern.includes('*')) {
     return (route) => route === pattern;
   }
-  const source = pattern
-    .split('*')
-    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    .join('.*');
-  const regex = new RegExp(`^${source}$`, 's');
-  return (route) => regex.test(route);
+  return (route) => globMatch(pattern, route);
 }
 
 function compare(a: Policy, b: Policy): number {
