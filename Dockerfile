@@ -1,6 +1,9 @@
 FROM node:26-alpine AS base
 WORKDIR /app
-RUN corepack enable
+# Corepack is no longer bundled with recent Node releases, so install the pnpm
+# version pinned in package.json directly.
+COPY package.json ./
+RUN npm install --global "pnpm@$(node -p 'require("./package.json").packageManager.split("@")[1].split("+")[0]')"
 
 FROM base AS build
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./

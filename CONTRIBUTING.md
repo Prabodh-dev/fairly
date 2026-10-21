@@ -6,12 +6,11 @@ By taking part you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md). To
 
 ## Set up
 
-You need Node 22 (20 or later works), pnpm, and Docker. The repository pins its pnpm version, so `corepack enable` gives you the right one.
+You need Node 22 (20 or later works), pnpm, and Docker. The repository pins its pnpm version in `package.json`, and pnpm switches to that version by itself, so any recent pnpm will do: `corepack enable` on Node up to 24, or `npm install --global pnpm` on newer Node, which no longer bundles Corepack.
 
 ```
 git clone https://github.com/Prabodh-dev/fairly.git
 cd fairly
-corepack enable
 pnpm install
 ```
 
@@ -55,7 +54,7 @@ docker compose logs fairly
 docker compose down --volumes
 ```
 
-`docker compose up --build` builds the multi-stage image (it needs network access to fetch pnpm and the dependencies), starts Redis, and waits for the service's `HEALTHCHECK`.
+`docker compose up --build` builds the multi-stage image (it needs network access to install pnpm and the dependencies), starts Redis, and waits for the service's `HEALTHCHECK`.
 
 ## Making a change
 

@@ -50,12 +50,11 @@ This builds the image and starts the service on port 8080 next to a Redis, with 
 
 ### From source
 
-You need Node 22 (20 or later works), pnpm, and a Redis 7. The repository pins its pnpm version, so `corepack enable` is enough to get the right one.
+You need Node 22 (20 or later works), pnpm, and a Redis 7. The repository pins its pnpm version in `package.json`, and pnpm switches to that version by itself, so any recent pnpm will do: `corepack enable` on Node up to 24, or `npm install --global pnpm` on newer Node, which no longer bundles Corepack.
 
 ```
 git clone https://github.com/Prabodh-dev/fairly.git
 cd fairly
-corepack enable
 pnpm install
 docker run -d --name fairly-redis -p 6379:6379 redis:7-alpine
 pnpm build

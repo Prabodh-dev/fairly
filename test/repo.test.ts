@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -128,6 +129,20 @@ describe('Dockerfile', () => {
   it('defines a health check against /healthz', () => {
     expect(runtime).toMatch(/^HEALTHCHECK\b/m);
     expect(runtime).toContain('/healthz');
+  });
+
+  it('installs pnpm at the version pinned in package.json without relying on Corepack', () => {
+    const base = dockerfile.slice(0, dockerfile.indexOf('AS build'));
+    expect(base).not.toMatch(/^RUN\s+corepack\b/m);
+    expect(base).toMatch(/^RUN npm install --global "pnpm@/m);
+    expect(base).not.toMatch(/pnpm@\d/);
+    const expression = /\$\(node -p '([^']+)'\)/.exec(base)?.[1];
+    expect(expression).toBeDefined();
+    const pinned = (JSON.parse(read('package.json')) as { packageManager: string }).packageManager;
+    const resolved = execFileSync(process.execPath, ['-p', expression ?? ''], { cwd: root('') })
+      .toString()
+      .trim();
+    expect(pinned).toBe(`pnpm@${resolved}`);
   });
 
   it('installs production dependencies only and copies nothing but built output into the final image', () => {
