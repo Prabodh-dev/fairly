@@ -1,0 +1,59 @@
+name: Bug report
+description: Something behaves differently from what the documentation or the tests say
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please do not paste admin tokens, rate limit keys that are secrets, or Redis credentials. For a security problem, use the private route in SECURITY.md instead of this form.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you see? Include status codes, headers and response bodies where they matter.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The policy or inline limit involved, the requests you sent, and the order. A curl sequence is ideal.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Image tag, or commit if you built from source.
+      placeholder: ghcr.io/prabodh-dev/fairly:1.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: how-run
+    attributes:
+      label: How are you running it?
+      options:
+        - Docker image or docker compose
+        - From source (pnpm start)
+        - Behind a reverse proxy or gateway
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Redis version and platform
+      placeholder: Redis 7.4, Linux arm64
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: The service logs are JSON lines. Remove anything sensitive.
+      render: json
