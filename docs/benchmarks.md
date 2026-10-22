@@ -81,6 +81,65 @@ Memory is measured with `MEMORY USAGE key SAMPLES 0` (exact, includes the key na
 | 256 | token-bucket | 16,024 | 14,732 - 17,010 | 15.29 | 24.30 | 32.00 | 38% | 55.0% | 0 |
 <!-- bench:http:end -->
 
+## Hot keys
+
+Run the four combinations below to record measured results for both targets. Each command updates only its matching table and environment block; the existing uniform benchmark tables remain unchanged. These results are separate because hot-key runs are not comparable to the default uniform workload.
+
+### Zipf distribution (exponent 1)
+
+<!-- bench:hot-engine-zipf-env:start -->
+Not yet recorded. Run the engine command below on the benchmark machine.
+<!-- bench:hot-engine-zipf-env:end -->
+
+<!-- bench:hot-engine-zipf:start -->
+| Concurrency | Algorithm | Throughput (req/s) | Range over runs | p50 (ms) | p95 (ms) | p99 (ms) | Redis CPU | Allowed | Errors |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+<!-- bench:hot-engine-zipf:end -->
+
+<!-- bench:hot-http-zipf-env:start -->
+Not yet recorded. Run the HTTP command below on the benchmark machine.
+<!-- bench:hot-http-zipf-env:end -->
+
+<!-- bench:hot-http-zipf:start -->
+| Concurrency | Algorithm | Throughput (req/s) | Range over runs | p50 (ms) | p95 (ms) | p99 (ms) | Redis CPU | Allowed | Errors |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+<!-- bench:hot-http-zipf:end -->
+
+### Single-key distribution
+
+<!-- bench:hot-engine-single-env:start -->
+Not yet recorded. Run the engine command below on the benchmark machine.
+<!-- bench:hot-engine-single-env:end -->
+
+<!-- bench:hot-engine-single:start -->
+| Concurrency | Algorithm | Throughput (req/s) | Range over runs | p50 (ms) | p95 (ms) | p99 (ms) | Redis CPU | Allowed | Errors |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+<!-- bench:hot-engine-single:end -->
+
+<!-- bench:hot-http-single-env:start -->
+Not yet recorded. Run the HTTP command below on the benchmark machine.
+<!-- bench:hot-http-single-env:end -->
+
+<!-- bench:hot-http-single:start -->
+| Concurrency | Algorithm | Throughput (req/s) | Range over runs | p50 (ms) | p95 (ms) | p99 (ms) | Redis CPU | Allowed | Errors |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+<!-- bench:hot-http-single:end -->
+
+A Zipf distribution assigns higher probability to lower-numbered keys, with weights proportional to `1 / rank`. In `single` mode every request uses the same key. These workloads increase contention on a small part of the key space, and the allowed percentage can be much lower than in uniform mode because requests compete for the same per-key limit. Compare measured numbers rather than assuming one algorithm wins: the sliding window log maintains request entries, token bucket updates its state on every request, and fixed window only increments its counter.
+
+### Reproducing hot-key runs
+
+Use the same machine, Redis setup, request count, concurrency, and repeat count for all four runs. The commands below record 100,000 requests at concurrency 64 for each algorithm and update only the relevant hot-key table.
+
+```sh
+node scripts/benchmark.mjs --target engine --key-distribution zipf --concurrency 64 --write-md docs/benchmarks.md
+node scripts/benchmark.mjs --target http --spawn --key-distribution zipf --concurrency 64 --write-md docs/benchmarks.md
+node scripts/benchmark.mjs --target engine --key-distribution single --concurrency 64 --write-md docs/benchmarks.md
+node scripts/benchmark.mjs --target http --spawn --key-distribution single --concurrency 64 --write-md docs/benchmarks.md
+```
+
+The tables above must be regenerated on a real benchmark machine before drawing performance conclusions. The default `uniform` mode continues to write the original benchmark blocks.
+
 ## Memory
 
 Memory after the 64-concurrency engine run above (500 keys, each key sent about 200 requests against a limit of 100):
@@ -129,7 +188,7 @@ All differences below are from the tables above. Run-to-run spread on this share
 
 - One 4 vCPU virtual machine runs Redis (in a container with host networking), the service and the load generator, so they compete for CPU. Numbers will differ on separate hosts, and absolute values are not a statement about production capacity.
 - Closed loop load at fixed concurrency, not a fixed arrival rate. Latency under open-loop overload would look different.
-- Keys are uniform. A hot key (a single key receiving most traffic) is not measured, and would serialize on one Redis key for every algorithm.
+- The default distribution is uniform. The optional `zipf` and `single` modes below cover skewed traffic; they do not model every production access pattern.
 - One limit (100) and window (60 s) for the throughput tables; the memory table varies the limit.
 - Persistence is off in Redis. Enabling it changes throughput.
 
@@ -145,4 +204,4 @@ node scripts/benchmark.mjs --target engine --memory-profile --write-md docs/benc
 node scripts/benchmark.mjs --target http --spawn --write-md docs/benchmarks.md
 ```
 
-`--target http --spawn` starts `dist/main.js` itself on port 18080 with `LOG_LEVEL=warn` and fail-closed mode, so a Redis error shows up as an error count rather than as silently allowed requests. Use `--url` instead of `--spawn` to benchmark a service that is already running. Other options: `--requests`, `--concurrency 1,16,64,256`, `--keys`, `--limit`, `--window`, `--repeats`, `--http-threads`, `--redis-url`, `--json <file>` to save raw results.
+`--target http --spawn` starts `dist/main.js` itself on port 18080 with `LOG_LEVEL=warn` and fail-closed mode, so a Redis error shows up as an error count rather than as silently allowed requests. Use `--url` instead of `--spawn` to benchmark a service that is already running. Other options: `--requests`, `--concurrency 1,16,64,256`, `--keys`, `--key-distribution uniform|zipf|single`, `--limit`, `--window`, `--repeats`, `--http-threads`, `--redis-url`, `--json <file>` to save raw results.
