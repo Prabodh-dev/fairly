@@ -21,8 +21,31 @@ function mulberry32(seed) {
   };
 }
 
-async function drive({ send, concurrency, total, keys, seed }) {
+function createKeyPicker(keys, distribution, random) {
+  if (distribution === 'single') return () => 0;
+  if (distribution === 'uniform') return () => Math.floor(random() * keys);
+  const cumulative = [];
+  let totalWeight = 0;
+  for (let i = 0; i < keys; i++) {
+    totalWeight += 1 / (i + 1);
+    cumulative.push(totalWeight);
+  }
+  return () => {
+    const target = random() * totalWeight;
+    let low = 0;
+    let high = cumulative.length - 1;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (target < cumulative[middle]) high = middle;
+      else low = middle + 1;
+    }
+    return low;
+  };
+}
+
+async function drive({ send, concurrency, total, keys, seed, keyDistribution = 'uniform' }) {
   const random = mulberry32(seed);
+  const pickKey = createKeyPicker(keys, keyDistribution, random);
   const latencies = new Float64Array(total);
   const counts = { allowed: 0, denied: 0, errors: 0 };
   let issued = 0;
@@ -30,7 +53,7 @@ async function drive({ send, concurrency, total, keys, seed }) {
     for (;;) {
       const index = issued++;
       if (index >= total) return;
-      const key = `bench-${Math.floor(random() * keys)}`;
+      const key = `bench-${pickKey()}`;
       const started = performance.now();
       try {
         const allowed = await send(key);
@@ -154,7 +177,7 @@ function runHttpLoad(config, total) {
 async function runCell(ctx, algorithm, concurrency, total, limit) {
   const { redis, args } = ctx;
   const windowSeconds = args.window;
-  const base = { algorithm, limit, windowSeconds, keys: args.keys, seed: 1234, concurrency };
+  const base = { algorithm, limit, windowSeconds, keys: args.keys, seed: 1234, concurrency, keyDistribution: args.keyDistribution };
 
   const load = async (count, seed) => {
     if (ctx.target === 'engine') {
@@ -269,6 +292,7 @@ async function main() {
       window: { type: 'string', default: '60' },
       repeats: { type: 'string', default: '5' },
       'http-threads': { type: 'string', default: '2' },
+      'key-distribution': { type: 'string', default: 'uniform' },
       'memory-profile': { type: 'boolean', default: false },
       'write-md': { type: 'string' },
       json: { type: 'string' },
@@ -280,7 +304,11 @@ async function main() {
     limit: Number(values.limit),
     window: Number(values.window),
     httpThreads: Number(values['http-threads']),
+    keyDistribution: values['key-distribution'],
   };
+  if (!['uniform', 'zipf', 'single'].includes(args.keyDistribution)) {
+    throw new Error('--key-distribution must be uniform, zipf, or single');
+  }
   const target = values.target;
   if (target !== 'engine' && target !== 'http') throw new Error('--target must be engine or http');
   const levels = values.concurrency.split(',').map(Number);
@@ -338,18 +366,25 @@ async function main() {
       `- Date: ${new Date().toISOString().slice(0, 10)}`,
       `- Machine: ${os.cpus().length} vCPU (${os.cpus()[0]?.model.trim()}), ${Math.round(os.totalmem() / 2 ** 30)} GiB RAM, ${os.type()} ${os.release()}`,
       `- Node ${process.versions.node}, Redis ${redisVersion} (persistence off), load generator, service and Redis on the same machine`,
-      `- Per-cell workload: ${fmt(requests)} requests (${fmt(Math.min(requests, 20000))} at concurrency 1), ${fmt(args.keys)} keys chosen uniformly with a fixed seed, limit ${args.limit}, window ${args.window}s, median of ${repeats} runs by throughput`,
+      `- Per-cell workload: ${fmt(requests)} requests (${fmt(Math.min(requests, 20000))} at concurrency 1), ${fmt(args.keys)} keys, limit ${args.limit}, window ${args.window}s, median of ${repeats} runs by throughput`,
+      `- Key distribution: ${args.keyDistribution}${args.keyDistribution === 'zipf' ? ' (Zipf exponent 1)' : ''}; fixed seed`,
     ].join('\n');
     const result = { env, cells, profile, target, memoryLevel };
 
     if (values.json) fs.writeFileSync(values.json, JSON.stringify(result, null, 2));
     if (values['write-md']) {
       let text = fs.readFileSync(values['write-md'], 'utf8');
-      text = replaceBlock(text, `${target}`, loadTable(cells, levels));
-      text = replaceBlock(text, `${target}-env`, env);
-      if (target === 'engine') {
-        text = replaceBlock(text, 'memory-per-key', keyMemoryTable(cells, memoryLevel));
-        if (profile) text = replaceBlock(text, 'memory-profile', profileTable(profile));
+      if (args.keyDistribution === 'uniform') {
+        text = replaceBlock(text, `${target}`, loadTable(cells, levels));
+        text = replaceBlock(text, `${target}-env`, env);
+        if (target === 'engine') {
+          text = replaceBlock(text, 'memory-per-key', keyMemoryTable(cells, memoryLevel));
+          if (profile) text = replaceBlock(text, 'memory-profile', profileTable(profile));
+        }
+      } else {
+        const name = `hot-${target}-${args.keyDistribution}`;
+        text = replaceBlock(text, name, loadTable(cells, levels));
+        text = replaceBlock(text, `${name}-env`, env);
       }
       fs.writeFileSync(values['write-md'], text);
     } else {
