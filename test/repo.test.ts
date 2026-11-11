@@ -221,6 +221,46 @@ describe('community and security files', () => {
   });
 });
 
+describe('pinned patched transitive dependencies', () => {
+  const overrides = (JSON.parse(read('package.json')) as { pnpm?: { overrides?: Record<string, string> } }).pnpm?.overrides ?? {};
+  const lock = parse(read('pnpm-lock.yaml')) as { overrides?: Record<string, string>; packages: Record<string, unknown> };
+
+  const versionsOf = (name: string): string[] =>
+    Object.keys(lock.packages)
+      .filter((key) => key.startsWith(`${name}@`))
+      .map((key) => key.slice(name.length + 1));
+
+  const atLeast = (version: string, floor: string): boolean => {
+    const a = version.split('.').map(Number);
+    const b = floor.split('.').map(Number);
+    for (let i = 0; i < 3; i++) {
+      if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0);
+    }
+    return true;
+  };
+
+  it('keeps the security overrides in package.json and in the lockfile', () => {
+    expect(overrides).toEqual({
+      'fast-uri@>=3.0.0 <3.1.9': '^3.1.9',
+      'fast-uri@>=4.0.0 <4.2.3': '^4.2.3',
+      '@fastify/static>glob': '^14.0.2',
+    });
+    expect(lock.overrides).toEqual(overrides);
+  });
+
+  it('resolves fast-uri, glob and minimatch to patched versions where the advisories applied', () => {
+    for (const version of versionsOf('fast-uri')) {
+      expect(atLeast(version, version.startsWith('3.') ? '3.1.9' : '4.2.3'), `fast-uri@${version}`).toBe(true);
+    }
+    for (const version of versionsOf('glob').filter((v) => Number(v.split('.')[0]) >= 13)) {
+      expect(atLeast(version, '14.0.2'), `glob@${version}`).toBe(true);
+    }
+    for (const version of versionsOf('minimatch').filter((v) => Number(v.split('.')[0]) >= 11)) {
+      expect(atLeast(version, '11.0.1'), `minimatch@${version}`).toBe(true);
+    }
+  });
+});
+
 describe('repository metadata', () => {
   it('ships an MIT license that package.json agrees with', () => {
     expect(read('LICENSE')).toMatch(/^MIT License/);
