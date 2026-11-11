@@ -64,7 +64,7 @@ Review of the request path, the Lua scripts and the configuration code found and
 ### Container and supply chain
 
 - The image runs as the unprivileged `node` user, contains production dependencies and compiled output only, and holds no secrets. Configuration comes from environment variables at run time.
-- CI runs `pnpm audit` on every push and pull request and weekly: any advisory in production dependencies fails the build, and high or critical advisories in development dependencies do too. Dependabot proposes updates for npm packages, the Docker base image and GitHub Actions.
+- CI runs `pnpm audit` on every push and pull request and weekly: any advisory in production dependencies fails the build, and high or critical advisories in development dependencies do too. Dependabot proposes updates for npm packages, the Docker base image and GitHub Actions. When an advisory hits a transitive dependency before the package that pulls it in has released a fix, `pnpm.overrides` in `package.json` pins the patched version; each override should be removed once the upstream range allows the patched version on its own.
 - Release images are built by GitHub Actions from a version tag and published to GitHub Container Registry for `linux/amd64` and `linux/arm64`.
 
 ## Known limitations
