@@ -29,7 +29,7 @@
     "@seriousme/openapi-schema-validator": "^2.11.0",
     "@types/node": "^26.6.6",
     "ajv": "^8.20.0",
-    "eslint": "^10.13.0",
+    "eslint": "^10.14.0",
     "testcontainers": "^12.2.1",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.71.2",
